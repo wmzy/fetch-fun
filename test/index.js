@@ -1,28 +1,33 @@
 import fetchMock from 'fetch-mock';
-import { fetch, use } from '../src';
+import {fetchFun, use, defaults} from '../src';
 
 const example = 'https://example.com';
 
 describe('fetch-fun', () => {
+  beforeEach(() => {
+    defaults.fetch = (...params) => global.fetch(...params);
+  });
+
   afterEach(() => {
     fetchMock.restore();
   });
 
-  it('should fetch an url ok', async () => {
+  it('should get an url ok', async () => {
     const mock = fetchMock.mock(example, 200);
-    const res = await fetch(example);
+    // eslint-disable-next-line builtin-compat/no-incompatible-builtins
+    const res = await fetchFun.get(example);
     res.ok.should.be.true();
     mock.called(example).should.be.true();
   });
 
   it('should polyfill work', async () => {
-    const polyfill = fetchMock.sandbox().mock(example, 200);
+    const fetch = fetchMock.sandbox().mock(example, 200);
     const mock = fetchMock.mock(example, 200);
 
-    const res = await fetch({polyfill, url: example});
+    const res = await fetchFun({fetch, url: example});
     res.ok.should.be.true();
 
-    polyfill.called(example).should.be.true();
+    fetch.called(example).should.be.true();
     mock.called(example).should.be.false();
   });
 
@@ -31,10 +36,12 @@ describe('fetch-fun', () => {
       .mock(example, 200)
       .mock('/test1', 200)
       .mock('/test2', 200);
-    const res = ({url: example})
-      |> use(ctx => {ctx.url = '/test1';})(#)
-      |> use(ctx => {ctx.url = '/test2';})(#)
-      |> await fetch(#);
+
+    const res = await fetchFun(
+      {url: example},
+      use(next => (url, init) => next('/test1', init)),
+      use(next => (url, init) => next('/test2', init))
+    );
 
     res.ok.should.be.true();
     mock.called(example).should.be.false();

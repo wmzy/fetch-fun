@@ -1,31 +1,26 @@
-import curry from 'lodash/curry';
-import compose from './compose';
+import create from './create';
+import defaults from './defaults';
+import use from './middleware';
 
-// eslint-disable-next-line no-restricted-globals
-const g = global || window || self;
+const fetchFun = create(defaults);
 
-function toFetchParams(ctx) {
-  const { url, ...init } = ctx;
-  return [url, { ...init }];
-}
+export * from './config-build';
 
-export function fetch(context) {
-  if (typeof context === 'string') return g.fetch(context);
-  const { polyfill, middleware, ...ctx } = context;
-  const fetchIt = polyfill || g.fetch;
-  if (middleware) {
-    return compose(middleware)(ctx)
-      .then((fn) => {
-        const res = fetchIt(...toFetchParams(ctx));
-        if (fn) return fn(res);
-        return res;
-      });
-  }
+export * from './response';
 
-  return fetchIt(...toFetchParams(ctx));
-}
+const {get, delete: del, options, post, put, patch, head} = fetchFun;
+export {
+  create,
+  defaults,
+  use,
+  fetchFun,
+  get,
+  del as delete,
+  options,
+  post,
+  put,
+  patch,
+  head
+};
 
-export const use = curry((cb, context) => {
-  const middleware = context.middleware || [];
-  return { ...context, middleware: [...middleware, cb] };
-});
+export default fetchFun;
