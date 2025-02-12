@@ -18,7 +18,7 @@
     "build": "vite build",
     "dev": "vite",
     "preview": "vite preview",
-    "prepublishOnly": "rimraf dist && npm run build",
+    "prepublishOnly": "npm run build -- --emptyOutDir",
     "coverage": "vitest run --coverage",
     "lint": "eslint --fix src test",
     "test": "vitest",
