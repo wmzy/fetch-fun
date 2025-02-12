@@ -132,10 +132,10 @@ export function mapResponse<T extends Options>(
 
 export function error<T extends Options>(
   o: T,
-  throwError: (res: Response) => void | Promise<void>
+  checkError: (res: Response) => void | Promise<void>
 ) {
   return mapResponse(o, async (res) => {
-    await throwError(res);
+    await checkError(res);
     return res;
   });
 }

@@ -10,12 +10,22 @@ export type Options = Omit<RequestInit, 'headers'> & {
   middlewares?: Middleware[];
 };
 
+export type PipeFn = <T extends Pipe, const P extends any[], R>(
+  this: T,
+  action: (o: T, ...p: P) => R,
+  ...params: P
+) => R;
+
 export type Pipe = {
-  pipe: <T extends Pipe, const P extends any[], R>(
-    this: T,
-    action: (o: T, ...p: P) => R,
-    ...params: P
-  ) => R;
+  pipe: PipeFn;
+  /**
+   * @alias pipe
+   */
+  add: PipeFn;
+  /**
+   * @alias pipe
+   */
+  with: PipeFn;
 };
 
 export type Instance = { url: string } & Options & Pipe;
