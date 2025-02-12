@@ -16,10 +16,9 @@
   "scripts": {
     "commit": "lint-staged && git-cz -n",
     "build": "vite build",
-    "build:types": "tsc --emitDeclarationOnly",
     "dev": "vite",
     "preview": "vite preview",
-    "prepublish": "rimraf dist && npm run build && npm run build:types",
+    "prepublishOnly": "rimraf dist && npm run build",
     "coverage": "vitest run --coverage",
     "lint": "eslint --fix src test",
     "test": "vitest",
