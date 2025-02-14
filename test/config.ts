@@ -18,6 +18,8 @@ import {
   json,
   text,
   blob,
+  body,
+  jsonBody,
 } from '@/index';
 import { dataSymbol } from '@/constants';
 import { getData } from '@/util';
@@ -161,5 +163,16 @@ describe('config-build', function () {
       {} as any
     )('');
     res.should.have.property(dataSymbol);
+  });
+
+  it('body', function () {
+    body({}, 'test body').should.be.eql({ body: 'test body' });
+  });
+
+  it('jsonBody', function () {
+    jsonBody({}, { key: 'value' }).should.be.eql({
+      headers: { 'Content-Type': 'application/json' },
+      body: '{"key":"value"}',
+    });
   });
 });

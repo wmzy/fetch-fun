@@ -95,6 +95,17 @@ export function contentType<T extends Options>(o: T, type: string) {
   return header(o, 'Content-Type', type);
 }
 
+export function body<T extends Options>(o: T, data: string) {
+  return {
+    ...o,
+    body: data,
+  };
+}
+
+export function jsonBody<T extends Options>(o: T, data: unknown) {
+  return body(contentType(o, 'application/json'), JSON.stringify(data));
+}
+
 export function middlewares<T extends Options>(
   o: T,
   newMiddlewares: Middleware[]
