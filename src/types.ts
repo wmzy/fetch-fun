@@ -1,6 +1,6 @@
 export type Method = 'POST' | 'GET' | 'PUT' | 'DELETE' | 'PATCH' | 'HEAD';
 
-export type Middleware = (f: typeof fetch, instance: Instance) => typeof fetch;
+export type Middleware = (f: typeof fetch, instance: Fetchable) => typeof fetch;
 
 export type Options = Omit<RequestInit, 'headers'> & {
   headers?: Record<string, string>;
@@ -28,4 +28,5 @@ export type Pipe = {
   with: PipeFn;
 };
 
-export type Instance = { url: string } & Options & Pipe;
+export type Client = Options & Pipe;
+export type Fetchable = { url: string } & Options;
