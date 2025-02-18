@@ -1,6 +1,6 @@
 {
   "name": "fetch-fun",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "fetch functions",
   "main": "dist/index.cjs.js",
   "module": "dist/index.es.js",
