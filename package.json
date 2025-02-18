@@ -20,6 +20,7 @@
     "dev": "vite",
     "preview": "vite preview",
     "prepublishOnly": "npm run build -- --emptyOutDir",
+    "postpublish": "git push --follow-tags",
     "coverage": "vitest run --coverage",
     "lint": "eslint --fix src test",
     "test": "vitest",
