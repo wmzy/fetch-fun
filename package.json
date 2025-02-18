@@ -4,10 +4,10 @@
   "description": "fetch functions",
   "main": "dist/index.cjs.js",
   "module": "dist/index.es.js",
-  "types": "src/index.ts",
+  "types": "dist/types/index.ts",
   "exports": {
     ".": {
-      "types": "./src/index.ts",
+      "types": "./dist/types/index.ts",
       "import": "./dist/index.es.js",
       "require": "./dist/index.cjs.js"
     }
@@ -15,7 +15,8 @@
   "sideEffects": false,
   "scripts": {
     "commit": "lint-staged && git-cz -n",
-    "build": "vite build",
+    "build": "vite build && npm run build:types",
+    "build:types": "tsc -p tsconfig.build.json",
     "dev": "vite",
     "preview": "vite preview",
     "prepublishOnly": "npm run build -- --emptyOutDir",
@@ -66,7 +67,7 @@
     "eslint": "^9.20.0",
     "husky": "^9.1.7",
     "lint-staged": "^15.4.3",
-    "tools-config": "^0.2.0",
+    "tools-config": "^0.2.1",
     "typescript": "^5.7.3",
     "vite": "^6.1.0",
     "vitest": "^3.0.5"

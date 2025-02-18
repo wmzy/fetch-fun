@@ -16,23 +16,22 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
 
-    - uses: pnpm/action-setup@v4
-      with:
-        version: 9
-
     - name: Set up Node.js
       uses: actions/setup-node@v4
       with:
         node-version: '22'
 
     - name: Install dependencies
-      run: pnpm i
+      run: npm install
 
     - name: Run tests
       run: npm test
 
     - name: Collect coverage
-      run: npm run coverage -- --coverage.reporter=lcov
+      run: npm run coverage
 
     - name: Upload coverage to Coveralls
       uses: coverallsapp/github-action@v2
+      with:
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        path-to-lcov: ./coverage/lcov.info
