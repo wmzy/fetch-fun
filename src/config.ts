@@ -5,7 +5,7 @@ import { dataSymbol } from './constants';
 export function method<T extends Options, M extends Method>(
   o: T,
   method: M
-): T & { method: M } {
+): Omit<T, 'method'> & { method: M } {
   return {
     ...o,
     method,
@@ -15,7 +15,7 @@ export function method<T extends Options, M extends Method>(
 export function url<T extends Options, U extends string>(
   o: T,
   url: U
-): T & { url: U } {
+): Omit<T, 'url'> & { url: U } {
   return {
     ...o,
     url,
