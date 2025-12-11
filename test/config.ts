@@ -13,7 +13,7 @@ import {
   use,
   retry,
   mapResponse,
-  error,
+  checkError,
   data,
   json,
   text,
@@ -112,7 +112,7 @@ describe('config-build', function () {
   });
 
   it('error', async function () {
-    const mw = error({}, () => {
+    const mw = checkError({}, () => {
       throw new Error('test');
     });
     try {
@@ -127,7 +127,7 @@ describe('config-build', function () {
   });
 
   it('error should return response when no error thrown', async function () {
-    const mw = error({}, () => {
+    const mw = checkError({}, () => {
       // no error thrown
     });
     const res = await mw.middlewares[0](

@@ -37,15 +37,29 @@ Here is a basic example of how to use Fetch Fun:
 ```typescript
 import * as ff from 'fetch-fun';
 
-const fetchData = async () => {
-  const client = ff.create()
-    .with(ff.baseUrl, 'https://api.example.com/api/v1')
-    .add(ff.header, 'Content-Type', 'application/json');
+// Create a reusable client with base configuration
+const client = ff.create()
+  .pipe(ff.baseUrl, 'https://api.example.com')
+  .pipe(ff.header, 'Content-Type', 'application/json');
 
-  ff.fetchJSON(client).then((data) => {
-	  console.log(data);
-  })
-};
+// Make a GET request
+const users = await client
+  .pipe(ff.url, '/users')
+  .pipe(ff.fetchJSON);
+
+// Make a POST request with JSON body
+const newUser = await client
+  .pipe(ff.url, '/users')
+  .pipe(ff.method, 'POST')
+  .pipe(ff.jsonBody, { name: 'John', email: 'john@example.com' })
+  .pipe(ff.fetchJSON);
+
+// With retry and timeout
+const data = await client
+  .pipe(ff.url, '/data')
+  .pipe(ff.retry, 3)
+  .pipe(ff.signal, AbortSignal.timeout(5000))
+  .pipe(ff.fetchJSON);
 ```
 
 ## Contributing
