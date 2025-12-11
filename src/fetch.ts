@@ -16,10 +16,14 @@ export function toFetchPrams(o: Fetchable): [string, RequestInit] {
   return [baseUrl ? `${baseUrl}${url}` : url, rest];
 }
 
+export function applyMiddlewares(f: typeof globalThis.fetch, o: Fetchable) {
+  const middlewares = o.middlewares || [];
+  return middlewares.reduce((f, mw) => mw(f, o), f);
+}
+
 export function fetch(o: Fetchable) {
   const f = o.fetch || globalThis.fetch;
-  const middlewares = o.middlewares || [];
-  return middlewares.reduce((f, mw) => mw(f, o), f)(...toFetchPrams(o));
+  return applyMiddlewares(f, o)(...toFetchPrams(o));
 }
 
 export function fetchData<T = unknown>(o: Fetchable): Promise<T> {

@@ -1,28 +1,26 @@
-import { Middleware } from './types';
-import { sleep } from './util';
+import type { Fetchable, Middleware } from './types';
+import { sleep, retry, backoffDelay, isNotRetryError } from './util';
 
-export function createRetryBase(
-  beforeRetry: (o: { retryCount: number; lastError: Error }) => Promise<void>
-): Middleware {
-  return (f) =>
-    (...params) => {
-      let retryCount = 0;
-      function task(): ReturnType<typeof f> {
-        return f(...params).catch((e) =>
-          beforeRetry({
-            retryCount: retryCount++,
-            lastError: e,
-          }).then(task)
-        );
-      }
-      return task();
-    };
+export type FetchBeforeRetry = (
+  attempt: number,
+  error: unknown,
+  o: Fetchable
+) => Promise<void>;
+
+export function createRetryBase(beforeRetry: FetchBeforeRetry): Middleware {
+  return (f, o) =>
+    (...params: Parameters<typeof f>) =>
+      retry(
+        () => f(...params),
+        (attempt, err) => beforeRetry(attempt, err, o)
+      );
 }
 
 export function createRetry(maxRetries: number): Middleware {
-  return createRetryBase(({ retryCount, lastError }) =>
-    retryCount < maxRetries
-      ? sleep(1000 * Math.pow(2, retryCount))
-      : Promise.reject(lastError)
-  );
+  return createRetryBase(async (attempt, error, o) => {
+    if (isNotRetryError(error)) throw error.cause;
+    if (attempt >= maxRetries) throw error;
+
+    await sleep(backoffDelay(attempt, 1000, 10000, 2), o.signal);
+  });
 }

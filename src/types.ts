@@ -8,6 +8,7 @@ export type Options = Omit<RequestInit, 'headers'> & {
   baseUrl?: string;
   fetch?: typeof fetch;
   middlewares?: Middleware[];
+  signal?: AbortSignal;
 };
 
 export type PipeFn = <T extends Pipe, const P extends any[], R>(

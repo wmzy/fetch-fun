@@ -1,6 +1,6 @@
 import { createRetry } from './middleware';
-import type { Method, Middleware, Options } from './types';
-import { dataSymbol } from './constants';
+import type { Fetchable, Method, Middleware, Options } from './types';
+import { dataSymbol, readDataSymbol } from './constants';
 
 export function method<T extends Options, M extends Method>(
   o: T,
@@ -24,7 +24,7 @@ export function url<T extends Options, U extends string>(
 
 export function appendUrl<
   const T extends Options & { url: string },
-  U extends string,
+  U extends string
 >(o: T, to: U): Omit<T, 'url'> & { url: `${T['url']}${U}` } {
   return url(o, `${o.url}${to}`);
 }
@@ -36,6 +36,16 @@ export function baseUrl<T extends Options, U extends string>(
   return {
     ...o,
     baseUrl,
+  };
+}
+
+export function signal<T extends Options>(
+  o: T,
+  signal: AbortSignal
+): T & { signal: AbortSignal } {
+  return {
+    ...o,
+    signal,
   };
 }
 
@@ -62,7 +72,7 @@ export function header<
   H extends Record<string, string>,
   T extends Options & { headers: H },
   K extends string,
-  V extends string,
+  V extends string
 >(
   o: T,
   k: K,
@@ -136,9 +146,14 @@ export function retry<T extends Options>(o: T, maxRetries: number) {
 
 export function mapResponse<T extends Options>(
   o: T,
-  mapper: (res: Response) => Response | Promise<Response>
+  mapper: (res: Response, oo: Fetchable) => Response | Promise<Response>
 ) {
-  return use(o, (f) => (params) => f(params).then(mapper));
+  return use(
+    o,
+    (f, oo) =>
+      (...params: Parameters<typeof f>) =>
+        f(...params).then((res) => mapper(res, oo))
+  );
 }
 
 export function error<T extends Options>(
@@ -153,10 +168,17 @@ export function error<T extends Options>(
 
 export function data<T extends Options>(
   o: T,
-  getter: (res: Response) => unknown
+  reader: (res: Response) => unknown
 ) {
-  return mapResponse(o, async (res) => {
-    const data = await getter(res);
+  const oo = {
+    ...o,
+    [readDataSymbol]: reader,
+  };
+  return mapResponse(oo, async (res, oo) => {
+    if (dataSymbol in res) return res;
+
+    const currentReader = oo[readDataSymbol] as (res: Response) => unknown;
+    const data = await currentReader(res);
     return { ...res, [dataSymbol]: data };
   });
 }

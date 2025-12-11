@@ -20,6 +20,7 @@ import {
   blob,
   body,
   jsonBody,
+  signal,
 } from '@/index';
 import { dataSymbol } from '@/constants';
 import { getData } from '@/util';
@@ -43,6 +44,13 @@ describe('config-build', function () {
 
   it('method', function () {
     method({}, 'GET').should.be.eql({ method: 'GET' });
+  });
+
+  it('signal', function () {
+    const s = new AbortController().signal;
+    signal({}, s).should.be.eql({
+      signal: s,
+    });
   });
 
   it('headers', function () {
@@ -76,14 +84,14 @@ describe('config-build', function () {
   });
 
   it('middlewares', function () {
-    const mw = [() => ({}) as any];
+    const mw = [() => ({} as any)];
     middlewares({}, mw).should.be.eql({
       middlewares: mw,
     });
   });
 
   it('use', function () {
-    const mw = () => ({}) as any;
+    const mw = () => ({} as any);
     use({}, mw).should.be.eql({
       middlewares: [mw],
     });
@@ -98,7 +106,7 @@ describe('config-build', function () {
     const mw = mapResponse({}, (res) => res);
     const res = await mw.middlewares[0](
       () => Promise.resolve(new Response()),
-      {} as any
+      mw as any
     )('');
     res.should.be.instanceof(Response);
   });
@@ -110,12 +118,23 @@ describe('config-build', function () {
     try {
       await mw.middlewares[0](
         () => Promise.resolve(new Response()),
-        {} as any
+        mw as any
       )('');
       should().fail();
     } catch (e) {
       (e as Error).message.should.be.eql('test');
     }
+  });
+
+  it('error should return response when no error thrown', async function () {
+    const mw = error({}, () => {
+      // no error thrown
+    });
+    const res = await mw.middlewares[0](
+      () => Promise.resolve(new Response('ok')),
+      mw as any
+    )('');
+    res.should.be.instanceof(Response);
   });
 
   it('data', async function () {
@@ -127,7 +146,7 @@ describe('config-build', function () {
             headers: { 'Content-Type': 'application/json' },
           })
         ),
-      {} as any
+      mw as any
     )('');
 
     getData<any>(res).should.be.eql({});
@@ -142,7 +161,7 @@ describe('config-build', function () {
             headers: { 'Content-Type': 'application/json' },
           })
         ),
-      {} as any
+      mw as any
     )('');
     getData<any>(res).should.be.eql({});
   });
@@ -151,7 +170,7 @@ describe('config-build', function () {
     const mw = text({});
     const res = await mw.middlewares[0](
       () => Promise.resolve(new Response('text')),
-      {} as any
+      mw as any
     )('');
     getData<any>(res).should.be.eql('text');
   });
@@ -160,7 +179,7 @@ describe('config-build', function () {
     const mw = blob({});
     const res = await mw.middlewares[0](
       () => Promise.resolve(new Response(new Blob())),
-      {} as any
+      mw as any
     )('');
     res.should.have.property(dataSymbol);
   });
