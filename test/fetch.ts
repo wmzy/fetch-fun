@@ -56,4 +56,54 @@ describe('Fetch Tests', () => {
 
     mockFetch.should.toHaveBeenCalledWith('/test', {});
   });
+
+  it('should append searchParams to URL', async () => {
+    const mockFetch = vi.fn().mockResolvedValue(new Response('Success'));
+    const instance = ff.create({
+      url: '/test',
+      fetch: mockFetch,
+    }).pipe(ff.query, 'page=1&limit=10');
+
+    await ff.fetch(instance);
+
+    mockFetch.should.toHaveBeenCalledWith('/test?page=1&limit=10', {});
+  });
+
+  it('should append searchParams to URL with existing query string', async () => {
+    const mockFetch = vi.fn().mockResolvedValue(new Response('Success'));
+    const instance = ff.create({
+      url: '/test?existing=value',
+      fetch: mockFetch,
+    }).pipe(ff.query, 'page=1');
+
+    await ff.fetch(instance);
+
+    mockFetch.should.toHaveBeenCalledWith('/test?existing=value&page=1', {});
+  });
+
+  it('should combine baseUrl, url, and searchParams', async () => {
+    const mockFetch = vi.fn().mockResolvedValue(new Response('Success'));
+    const instance = ff.create({
+      baseUrl: 'https://api.example.com',
+      url: '/users',
+      fetch: mockFetch,
+    }).pipe(ff.query, 'page=1');
+
+    await ff.fetch(instance);
+
+    mockFetch.should.toHaveBeenCalledWith('https://api.example.com/users?page=1', {});
+  });
+
+  it('should not append empty searchParams', async () => {
+    const mockFetch = vi.fn().mockResolvedValue(new Response('Success'));
+    const instance = ff.create({
+      url: '/test',
+      fetch: mockFetch,
+      searchParams: new URLSearchParams(),
+    });
+
+    await ff.fetch(instance);
+
+    mockFetch.should.toHaveBeenCalledWith('/test', {});
+  });
 });

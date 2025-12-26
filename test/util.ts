@@ -5,6 +5,7 @@ import {
   backoffDelay,
   asNotRetryError,
   isNotRetryError,
+  createQuery,
 } from '@/util';
 import { notRetryErrorSymbol } from '@/constants';
 
@@ -223,6 +224,40 @@ describe('Util Functions', () => {
     it('should return false for non-error objects', () => {
       expect(isNotRetryError({})).toBe(false);
       expect(isNotRetryError({ [notRetryErrorSymbol]: false })).toBe(false);
+    });
+  });
+
+  describe('createQuery', () => {
+    it('should create URLSearchParams from object', () => {
+      const query = createQuery({ page: '1', limit: '10' });
+      expect(query).toBeInstanceOf(URLSearchParams);
+      expect(query.get('page')).toBe('1');
+      expect(query.get('limit')).toBe('10');
+    });
+
+    it('should create URLSearchParams from tuple array', () => {
+      const query = createQuery([
+        ['tag', 'a'],
+        ['tag', 'b'],
+        ['page', '1'],
+      ] as const);
+      expect(query).toBeInstanceOf(URLSearchParams);
+      expect(query.getAll('tag')).toEqual(['a', 'b']);
+      expect(query.get('page')).toBe('1');
+    });
+
+    it('should create URLSearchParams from string', () => {
+      const query = createQuery('page=1&limit=10');
+      expect(query).toBeInstanceOf(URLSearchParams);
+      expect(query.get('page')).toBe('1');
+      expect(query.get('limit')).toBe('10');
+    });
+
+    it('should create URLSearchParams from existing URLSearchParams', () => {
+      const existing = new URLSearchParams('page=1');
+      const query = createQuery(existing);
+      expect(query).toBeInstanceOf(URLSearchParams);
+      expect(query.get('page')).toBe('1');
     });
   });
 });

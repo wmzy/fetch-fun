@@ -1,5 +1,14 @@
 import { createRetry } from './middleware';
-import type { Fetchable, Method, Middleware, Options } from './types';
+import type {
+  AppendQueryType,
+  Fetchable,
+  Method,
+  Middleware,
+  Options,
+  QueryType,
+  SetQueryType,
+  TypedURLSearchParams,
+} from './types';
 import { dataSymbol, readDataSymbol } from './constants';
 
 /**
@@ -88,6 +97,170 @@ export function baseUrl<T extends Options, U extends string>(
   };
 }
 
+export type QueryInput = ConstructorParameters<typeof URLSearchParams>[0];
+
+/**
+ * Sets query parameters, replacing any existing searchParams.
+ *
+ * Accepts a string or URLSearchParams. For object serialization,
+ * use your preferred library (e.g., `qs`, `query-string`) before calling.
+ * The searchParams will be appended to the URL in `toFetchParams`.
+ *
+ * @param o - The options object to modify
+ * @param params - The query string or URLSearchParams
+ * @returns A new options object with searchParams set
+ *
+ * @example
+ * ```ts
+ * // With string
+ * client.pipe(url, '/users').pipe(query, 'page=1&limit=10')
+ *
+ * // With URLSearchParams
+ * client.pipe(url, '/users').pipe(query, new URLSearchParams({ page: '1' }))
+ *
+ * // With qs library for custom serialization
+ * import qs from 'qs';
+ * client.pipe(url, '/users').pipe(query, qs.stringify({ tags: ['a', 'b'] }))
+ * ```
+ */
+export function query<T extends Options>(
+  o: T,
+  params: QueryInput
+): Omit<T, 'searchParams'> & {
+  searchParams: TypedURLSearchParams<QueryType>;
+} {
+  return {
+    ...o,
+    searchParams: new URLSearchParams(
+      params
+    ) as TypedURLSearchParams<QueryType>,
+  };
+}
+
+/**
+ * Merges query parameters with existing searchParams.
+ *
+ * Accepts any value that can be passed to URLSearchParams constructor.
+ * The searchParams will be appended to the URL in `toFetchParams`.
+ *
+ * @param o - The options object to modify
+ * @param params - The query parameters to merge (string, URLSearchParams, object, etc.)
+ * @returns A new options object with merged searchParams
+ *
+ * @example
+ * ```ts
+ * // Merge with existing query
+ * client.pipe(url, '/users').pipe(query, 'page=1').pipe(mergeQuery, 'limit=10')
+ * // => searchParams: page=1&limit=10
+ *
+ * // With URLSearchParams
+ * client.pipe(url, '/users').pipe(mergeQuery, new URLSearchParams({ limit: '10' }))
+ *
+ * // With object
+ * client.pipe(url, '/users').pipe(mergeQuery, { page: '1', limit: '10' })
+ * ```
+ */
+export function mergeQuery<T extends Options>(
+  o: T,
+  params: QueryInput
+): T & { searchParams: TypedURLSearchParams } {
+  return {
+    ...o,
+    searchParams: new URLSearchParams([
+      ...(o.searchParams || []),
+      ...new URLSearchParams(params),
+    ]) as TypedURLSearchParams,
+  };
+}
+
+/**
+ * Sets a single query parameter, replacing any existing value for that key.
+ * Provides type-level tracking of parameter names and values.
+ *
+ * @param o - The options object to modify
+ * @param name - The parameter name
+ * @param value - The parameter value
+ * @returns A new options object with the parameter set and type tracked
+ *
+ * @example
+ * ```ts
+ * // Set a single parameter - TypeScript tracks { page: '1' }
+ * client.pipe(url, '/users').pipe(querySet, 'page', '1')
+ *
+ * // Chain multiple - TypeScript tracks { page: '1', limit: '10' }
+ * client.pipe(querySet, 'page', '1').pipe(querySet, 'limit', '10')
+ *
+ * // Replace existing value - TypeScript tracks { page: '2' }
+ * client.pipe(querySet, 'page', '1').pipe(querySet, 'page', '2')
+ * ```
+ */
+type InferQueryType<T> = T extends {
+  searchParams?: TypedURLSearchParams<infer Q>;
+}
+  ? Q
+  : {};
+
+export function querySet<T extends Options, K extends string, V extends string>(
+  o: T,
+  name: K,
+  value: V
+): Omit<T, 'searchParams'> & {
+  searchParams: TypedURLSearchParams<SetQueryType<InferQueryType<T>, K, V>>;
+} {
+  const searchParams = new URLSearchParams(o.searchParams);
+  searchParams.set(name, value);
+  return {
+    ...o,
+    searchParams,
+  } as any;
+}
+
+/**
+ * Appends a single query parameter, allowing duplicate keys.
+ * Provides type-level tracking - repeated keys become arrays.
+ *
+ * Unlike `querySet`, this does not replace existing values for the same key.
+ *
+ * @param o - The options object to modify
+ * @param name - The parameter name
+ * @param value - The parameter value
+ * @returns A new options object with the parameter appended and type tracked
+ *
+ * @example
+ * ```ts
+ * // Append a parameter - TypeScript tracks { tag: 'javascript' }
+ * client.pipe(url, '/posts').pipe(queryAppend, 'tag', 'javascript')
+ *
+ * // Append duplicate keys - TypeScript tracks { tag: ['a', 'b'] }
+ * client.pipe(queryAppend, 'tag', 'a').pipe(queryAppend, 'tag', 'b')
+ *
+ * // Mix with other params - TypeScript tracks { page: '1', tag: ['a', 'b'] }
+ * client
+ *   .pipe(querySet, 'page', '1')
+ *   .pipe(queryAppend, 'tag', 'a')
+ *   .pipe(queryAppend, 'tag', 'b')
+ * ```
+ */
+export function queryAppend<
+  T extends Options,
+  K extends string,
+  V extends string
+>(
+  o: T,
+  name: K,
+  value: V
+): Omit<T, 'searchParams'> & {
+  searchParams: TypedURLSearchParams<AppendQueryType<InferQueryType<T>, K, V>>;
+} {
+  return {
+    ...o,
+    searchParams: new URLSearchParams([
+      ...(o.searchParams || []),
+      [name, value],
+    ]),
+  } as any;
+}
+
 /**
  * Sets the AbortSignal for request cancellation.
  *
@@ -113,6 +286,28 @@ export function signal<T extends Options>(
     ...o,
     signal,
   };
+}
+
+/**
+ * Sets a timeout for the request using AbortSignal.timeout().
+ *
+ * This is a convenience wrapper around `signal` with `AbortSignal.timeout()`.
+ *
+ * @param o - The options object to modify
+ * @param ms - The timeout in milliseconds
+ * @returns A new options object with the timeout signal set
+ *
+ * @example
+ * ```ts
+ * // Timeout after 5 seconds
+ * client.pipe(timeout, 5000)
+ * ```
+ */
+export function timeout<T extends Options>(
+  o: T,
+  ms: number
+): T & { signal: AbortSignal } {
+  return signal(o, AbortSignal.timeout(ms));
 }
 
 /**

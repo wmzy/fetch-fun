@@ -21,6 +21,11 @@ import {
   body,
   jsonBody,
   signal,
+  timeout,
+  query,
+  mergeQuery,
+  querySet,
+  queryAppend,
 } from '@/index';
 import { dataSymbol } from '@/constants';
 import { getData } from '@/util';
@@ -192,6 +197,130 @@ describe('config-build', function () {
     jsonBody({}, { key: 'value' }).should.be.eql({
       headers: { 'Content-Type': 'application/json' },
       body: '{"key":"value"}',
+    });
+  });
+
+  it('timeout', function () {
+    const result = timeout({}, 5000);
+    result.signal.should.be.instanceof(AbortSignal);
+  });
+
+  describe('query', function () {
+    it('should set searchParams from string', function () {
+      const result = query({}, 'page=1&limit=10');
+      result.searchParams.toString().should.be.eql('page=1&limit=10');
+    });
+
+    it('should replace existing searchParams', function () {
+      const existing = new URLSearchParams('old=value');
+      const result = query({ searchParams: existing }, 'page=1');
+      result.searchParams.toString().should.be.eql('page=1');
+    });
+
+    it('should handle URLSearchParams input', function () {
+      const result = query({}, new URLSearchParams({ page: '1', limit: '10' }));
+      result.searchParams.get('page')!.should.be.eql('1');
+      result.searchParams.get('limit')!.should.be.eql('10');
+    });
+
+    it('should handle empty query string', function () {
+      const result = query({}, '');
+      result.searchParams.toString().should.be.eql('');
+    });
+
+    it('should handle empty URLSearchParams', function () {
+      const result = query({}, new URLSearchParams());
+      result.searchParams.size.should.be.eql(0);
+    });
+  });
+
+  describe('mergeQuery', function () {
+    it('should merge with existing searchParams', function () {
+      const existing = new URLSearchParams('page=1');
+      const result = mergeQuery({ searchParams: existing }, 'limit=10');
+      result.searchParams.toString().should.be.eql('page=1&limit=10');
+    });
+
+    it('should create searchParams if not exists', function () {
+      const result = mergeQuery({}, 'page=1');
+      result.searchParams.toString().should.be.eql('page=1');
+    });
+
+    it('should handle URLSearchParams input', function () {
+      const existing = new URLSearchParams('page=1');
+      const result = mergeQuery(
+        { searchParams: existing },
+        new URLSearchParams({ limit: '10' })
+      );
+      result.searchParams.toString().should.be.eql('page=1&limit=10');
+    });
+
+    it('should allow duplicate keys', function () {
+      const existing = new URLSearchParams('tag=a');
+      const result = mergeQuery({ searchParams: existing }, 'tag=b');
+      result.searchParams.toString().should.be.eql('tag=a&tag=b');
+    });
+
+    it('should handle empty merge', function () {
+      const existing = new URLSearchParams('page=1');
+      const result = mergeQuery({ searchParams: existing }, '');
+      result.searchParams.toString().should.be.eql('page=1');
+    });
+
+    it('should handle object input', function () {
+      const result = mergeQuery({}, { page: '1', limit: '10' });
+      result.searchParams.get('page')!.should.be.eql('1');
+      result.searchParams.get('limit')!.should.be.eql('10');
+    });
+  });
+
+  describe('querySet', function () {
+    it('should set a single parameter', function () {
+      const result = querySet({}, 'page', '1');
+      result.searchParams.toString().should.be.eql('page=1');
+    });
+
+    it('should replace existing value for same key', function () {
+      const existing = new URLSearchParams('page=1');
+      const result = querySet({ searchParams: existing }, 'page', '2');
+      result.searchParams.toString().should.be.eql('page=2');
+    });
+
+    it('should preserve other parameters', function () {
+      const existing = new URLSearchParams('page=1&limit=10');
+      const result = querySet({ searchParams: existing }, 'page', '2');
+      result.searchParams.get('page')!.should.be.eql('2');
+      result.searchParams.get('limit')!.should.be.eql('10');
+    });
+
+    it('should add new parameter to existing searchParams', function () {
+      const existing = new URLSearchParams('page=1');
+      const result = querySet({ searchParams: existing }, 'limit', '10');
+      result.searchParams.toString().should.be.eql('page=1&limit=10');
+    });
+  });
+
+  describe('queryAppend', function () {
+    it('should append a single parameter', function () {
+      const result = queryAppend({}, 'tag', 'javascript');
+      result.searchParams.toString().should.be.eql('tag=javascript');
+    });
+
+    it('should allow duplicate keys', function () {
+      const existing = new URLSearchParams('tag=a');
+      const result = queryAppend({ searchParams: existing }, 'tag', 'b');
+      result.searchParams.toString().should.be.eql('tag=a&tag=b');
+    });
+
+    it('should create searchParams if not exists', function () {
+      const result = queryAppend({}, 'page', '1');
+      result.searchParams.toString().should.be.eql('page=1');
+    });
+
+    it('should preserve existing parameters', function () {
+      const existing = new URLSearchParams('page=1');
+      const result = queryAppend({ searchParams: existing }, 'limit', '10');
+      result.searchParams.toString().should.be.eql('page=1&limit=10');
     });
   });
 });

@@ -200,3 +200,117 @@ export function asNotRetryError(e: unknown): Error {
 export function isNotRetryError(e: unknown): e is Error {
   return ((e as any) || {})[notRetryErrorSymbol] === true;
 }
+
+// ============ Query Type Utilities ============
+
+/**
+ * Extract all unique keys from a tuple array.
+ * [['a', 'b'], ['a', 'c'], ['d', 'e']] => 'a' | 'd'
+ */
+type ExtractKeys<T extends readonly (readonly [string, string])[]> =
+  T[number][0];
+
+/**
+ * Collect all values for a specific key from a tuple array.
+ * CollectValues<[['a', 'b'], ['a', 'c'], ['d', 'e']], 'a'> => ['b', 'c']
+ */
+type CollectValues<
+  T extends readonly (readonly [string, string])[],
+  K extends string,
+  Acc extends string[] = []
+> = T extends readonly [
+  readonly [infer Key, infer Value],
+  ...infer Rest extends readonly (readonly [string, string])[]
+]
+  ? Key extends K
+    ? Value extends string
+      ? CollectValues<Rest, K, [...Acc, Value]>
+      : CollectValues<Rest, K, Acc>
+    : CollectValues<Rest, K, Acc>
+  : Acc;
+
+/**
+ * Convert collected values to final type.
+ * Single value stays as string, multiple values become tuple.
+ * ['b'] => 'b'
+ * ['b', 'c'] => ['b', 'c']
+ */
+type ValuesToType<V extends string[]> = V extends [infer Single extends string]
+  ? Single
+  : V;
+
+/**
+ * Convert tuple array to record with proper handling of duplicate keys.
+ * [['a', 'b'], ['a', 'c'], ['d', 'e']] as const => { a: ['b', 'c'], d: 'e' }
+ */
+export type TupleArrayToRecord<
+  T extends readonly (readonly [string, string])[]
+> = {
+  [K in ExtractKeys<T>]: ValuesToType<CollectValues<T, K>>;
+};
+
+// ============ Typed URLSearchParams ============
+
+import type { TypedURLSearchParams } from './types';
+
+/**
+ * Forces TypeScript to expand/simplify a type for better IDE display.
+ * Converts complex nested types into their flattened form.
+ */
+type Prettify<T> = { [K in keyof T]: T[K] } & {};
+
+/**
+ * Creates a URLSearchParams with type information for IDE hints.
+ *
+ * Accepts various input formats:
+ * - Object: `{ page: '1', limit: '10' }`
+ * - Tuple array: `[['tag', 'a'], ['tag', 'b']]` (supports duplicate keys)
+ * - String: `'page=1&limit=10'`
+ * - URLSearchParams: existing instance
+ * - TypedURLSearchParams: preserves type information
+ *
+ * @template T - The input type (object or tuple array)
+ * @param input - The query parameters input
+ * @returns A URLSearchParams with type information
+ *
+ * @example
+ * ```ts
+ * // With object - type is { page: '1', limit: '10' }
+ * const q1 = createQuery({ page: '1', limit: '10' } as const);
+ *
+ * // With tuple array - type is { tag: ['a', 'b'], page: '1' }
+ * const q2 = createQuery([['tag', 'a'], ['tag', 'b'], ['page', '1']] as const);
+ *
+ * // Type information is preserved for IDE hints
+ * q1._type; // { page: '1', limit: '10' }
+ * q2._type; // { tag: ['a', 'b'], page: '1' }
+ * ```
+ */
+// Overload 1: Object input
+export function createQuery<const T extends Record<string, string>>(
+  input: T
+): TypedURLSearchParams<Prettify<T>>;
+// Overload 2: Tuple array input
+export function createQuery<
+  const T extends readonly (readonly [string, string])[]
+>(input: T): TypedURLSearchParams<Prettify<TupleArrayToRecord<T>>>;
+// Overload 3: TypedURLSearchParams input (preserve type)
+export function createQuery<Q extends Record<string, string | string[]>>(
+  input: TypedURLSearchParams<Q>
+): TypedURLSearchParams<Prettify<Q>>;
+// Overload 4: Plain string or URLSearchParams
+export function createQuery(
+  input: string | URLSearchParams
+): TypedURLSearchParams<Record<string, string>>;
+// Implementation
+export function createQuery(
+  input:
+    | Record<string, string>
+    | readonly (readonly [string, string])[]
+    | string
+    | URLSearchParams
+): TypedURLSearchParams<Record<string, string | string[]>> {
+  return new URLSearchParams(
+    input as ConstructorParameters<typeof URLSearchParams>[0]
+  ) as TypedURLSearchParams<Record<string, string | string[]>>;
+}

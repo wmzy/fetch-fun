@@ -22,6 +22,7 @@ export function toFetchParams(o: Fetchable): [string, RequestInit] {
   const {
     baseUrl,
     url,
+    searchParams,
     fetch,
     middlewares,
     pipe,
@@ -29,7 +30,16 @@ export function toFetchParams(o: Fetchable): [string, RequestInit] {
     with: w,
     ...rest
   } = o as Fetchable & Pipe;
-  return [baseUrl ? `${baseUrl}${url}` : url, rest];
+
+  // Build final URL: baseUrl + url + searchParams
+  let finalUrl = baseUrl ? `${baseUrl}${url}` : url;
+
+  if (searchParams && searchParams.size > 0) {
+    const separator = finalUrl.includes('?') ? '&' : '?';
+    finalUrl = `${finalUrl}${separator}${searchParams.toString()}`;
+  }
+
+  return [finalUrl, rest];
 }
 
 /**
