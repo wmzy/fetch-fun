@@ -1,4 +1,5 @@
 import { json } from './config';
+import { sortMiddlewares } from './middleware';
 import type { Fetchable, Pipe } from './types';
 import { getData } from './util';
 
@@ -45,15 +46,20 @@ export function toFetchParams(o: Fetchable): [string, RequestInit] {
 /**
  * Applies all middlewares to the fetch function.
  *
- * Middlewares are applied in order, each wrapping the previous fetch function.
+ * Middlewares are sorted based on their positioning constraints (outer/inner)
+ * before being applied. This ensures the onion model is respected:
+ * - Outer middlewares wrap inner middlewares
+ * - The first middleware in the sorted list is the outermost
  *
  * @param f - The base fetch function
  * @param o - The fetchable configuration containing middlewares
  * @returns The fetch function with all middlewares applied
  */
 export function applyMiddlewares(f: typeof globalThis.fetch, o: Fetchable) {
-  const middlewares = o.middlewares || [];
-  return middlewares.reduce((f, mw) => mw(f, o), f);
+  const entries = o.middlewares || [];
+  const sorted = sortMiddlewares(entries);
+  // Apply from last to first so that the first middleware is outermost
+  return sorted.reduceRight((f, entry) => entry.middleware(f, o), f);
 }
 
 /**

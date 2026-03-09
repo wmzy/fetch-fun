@@ -22,14 +22,116 @@ export type Method =
  *
  * @example
  * ```ts
- * const loggingMiddleware: Middleware = (f, instance) =>
+ * const loggingMiddleware: MiddlewareFn = (f, instance) =>
  *   (...params) => {
  *     console.log('Fetching:', params);
  *     return f(...params);
  *   };
  * ```
  */
-export type Middleware = (f: typeof fetch, instance: Fetchable) => typeof fetch;
+export type MiddlewareFn = (
+  f: typeof fetch,
+  instance: Fetchable
+) => typeof fetch;
+
+/**
+ * Symbol representing the default/normal position in middleware ordering.
+ * Middlewares without explicit positioning are placed at NORMAL position.
+ */
+export const NORMAL: unique symbol = Symbol('normal');
+
+/**
+ * Middleware position identifier.
+ * - `typeof NORMAL`: Default position for middlewares
+ * - `builtin:${string}`: Built-in middleware namespace (e.g., 'builtin:retry', 'builtin:timeout')
+ * - `string & {}`: Custom user-defined middleware names
+ */
+export type MiddlewareName =
+  | typeof NORMAL
+  | `builtin:${string}`
+  | (string & {});
+
+/**
+ * Configuration object for a middleware with positioning.
+ *
+ * The onion model means:
+ * - `outer: 'builtin:retry'` = This middleware wraps retry (executes before retry on request, after on response)
+ * - `inner: 'builtin:retry'` = This middleware is wrapped by retry (executes after retry on request, before on response)
+ *
+ * @example
+ * ```ts
+ * // Timeout should wrap retry (outer)
+ * {
+ *   name: 'builtin:timeout',
+ *   outer: 'builtin:retry',
+ *   middleware: createTimeout(5000),
+ * }
+ *
+ * // Auth should be inside retry (inner) - each retry attempt includes auth
+ * {
+ *   name: 'builtin:auth',
+ *   inner: 'builtin:retry',
+ *   middleware: createAuth(token),
+ * }
+ * ```
+ */
+export type MiddlewareConfig = {
+  /** Unique name for this middleware (used for positioning by other middlewares) */
+  name?: MiddlewareName;
+  /** Place this middleware outside (wrapping) the specified middleware */
+  outer?: MiddlewareName;
+  /** Place this middleware inside (wrapped by) the specified middleware */
+  inner?: MiddlewareName;
+  /** The actual middleware function */
+  middleware: MiddlewareFn;
+};
+
+/**
+ * Input type for adding middleware.
+ * Can be a simple middleware function or a configuration object with positioning.
+ */
+export type MiddlewareInput = MiddlewareFn | MiddlewareConfig;
+
+/**
+ * Internal middleware entry with resolved positioning.
+ */
+export type MiddlewareEntry = {
+  name: MiddlewareName;
+  outer?: MiddlewareName;
+  inner?: MiddlewareName;
+  middleware: MiddlewareFn;
+};
+
+/**
+ * @deprecated Use MiddlewareFn instead
+ */
+export type Middleware = MiddlewareFn;
+
+/**
+ * Branded middleware entry type for better IDE display.
+ * Shows as MW<"builtin:retry"> instead of MiddlewareEntry.
+ */
+export type MW<Name extends string = string> = MiddlewareEntry & {
+  readonly __brand?: Name;
+};
+
+/**
+ * Infer middleware name from MiddlewareInput.
+ * Returns the name string if provided, otherwise 'unknown'.
+ */
+export type InferMiddlewareName<M extends MiddlewareInput> =
+  M extends MiddlewareFn
+    ? 'unknown'
+    : M extends { name: infer N extends string }
+      ? N
+      : 'unknown';
+
+/**
+ * Map an array of MiddlewareInput to a tuple of MW with inferred names.
+ */
+export type MapMiddlewares<T extends readonly MiddlewareInput[]> = {
+  [K in keyof T]: MW<InferMiddlewareName<T[K]>>;
+};
 
 /**
  * Type-level representation of query parameters.
@@ -119,8 +221,8 @@ export type Options<Q extends QueryType = QueryType> = Omit<
   searchParams?: TypedURLSearchParams<Q>;
   /** Custom fetch implementation (defaults to globalThis.fetch) */
   fetch?: typeof fetch;
-  /** Array of middleware functions to apply */
-  middlewares?: Middleware[];
+  /** Array of middleware entries with positioning information */
+  middlewares?: MiddlewareEntry[];
   /** AbortSignal for request cancellation */
   signal?: AbortSignal;
 };

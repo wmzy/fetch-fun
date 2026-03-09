@@ -1,9 +1,14 @@
-import { createRetry } from './middleware';
+import { createRetry, normalizeMiddleware } from './middleware';
 import type {
   AppendQueryType,
   Fetchable,
   Method,
-  Middleware,
+  MiddlewareFn,
+  MiddlewareEntry,
+  MiddlewareInput,
+  MW,
+  InferMiddlewareName,
+  MapMiddlewares,
   Options,
   QueryType,
   SetQueryType,
@@ -474,7 +479,7 @@ export function jsonBody<T extends Options>(o: T, data: unknown) {
  * Sets the middleware array, replacing any existing middlewares.
  *
  * @param o - The options object to modify
- * @param newMiddlewares - Array of middleware functions
+ * @param newMiddlewares - Array of middleware inputs (functions or configs)
  * @returns A new options object with the middlewares set
  *
  * @example
@@ -482,46 +487,71 @@ export function jsonBody<T extends Options>(o: T, data: unknown) {
  * client.pipe(middlewares, [loggingMiddleware, authMiddleware])
  * ```
  */
-export function middlewares<T extends Options>(
+export function middlewares<
+  T extends Options,
+  const M extends readonly MiddlewareInput[],
+>(
   o: T,
-  newMiddlewares: Middleware[]
-): T & {
-  middlewares: Middleware[];
+  newMiddlewares: M
+): Omit<T, 'middlewares'> & {
+  middlewares: MapMiddlewares<M>;
 } {
   return {
     ...o,
-    middlewares: newMiddlewares,
-  };
+    middlewares: newMiddlewares.map(normalizeMiddleware),
+  } as any;
 }
 
 /**
- * Adds a middleware function to the middleware chain.
+ * Infer existing middlewares type from Options as a tuple.
+ */
+type InferMiddlewares<T> = T extends { middlewares: infer M extends unknown[] }
+  ? M
+  : [];
+
+/**
+ * Adds a middleware to the middleware chain.
+ *
+ * Accepts either a simple middleware function or a configuration object
+ * with positioning information for the onion model.
  *
  * @param o - The options object to modify
- * @param middleware - The middleware function to add
+ * @param middleware - The middleware function or configuration object
  * @returns A new options object with the middleware added
  *
  * @example
  * ```ts
- * const loggingMiddleware: Middleware = (f, instance) =>
+ * // Simple middleware function
+ * const loggingMiddleware: MiddlewareFn = (f, instance) =>
  *   (...params) => {
  *     console.log('Request:', params);
  *     return f(...params);
  *   };
- *
  * client.pipe(use, loggingMiddleware)
+ *
+ * // Middleware with positioning (onion model)
+ * client.pipe(use, {
+ *   name: 'builtin:timeout',
+ *   outer: 'builtin:retry',  // timeout wraps retry
+ *   middleware: createTimeout(5000),
+ * })
+ *
+ * // Using built-in middleware factories
+ * import { builtins } from 'fetch-fun';
+ * client.pipe(use, builtins.retry(3))
+ * client.pipe(use, builtins.timeout(5000))
  * ```
  */
-export function use<T extends Options>(
+export function use<T extends Options, const M extends MiddlewareInput>(
   o: T,
-  middleware: Middleware
-): T & {
-  middlewares: Middleware[];
+  middleware: M
+): Omit<T, 'middlewares'> & {
+  middlewares: [...InferMiddlewares<T>, MW<InferMiddlewareName<M>>];
 } {
   return {
     ...o,
-    middlewares: [...(o.middlewares || []), middleware],
-  };
+    middlewares: [...(o.middlewares || []), normalizeMiddleware(middleware)],
+  } as any;
 }
 
 /**
@@ -566,12 +596,11 @@ export function mapResponse<T extends Options>(
   o: T,
   mapper: (res: Response, options: Fetchable) => Response | Promise<Response>
 ) {
-  return use(
-    o,
+  const mw: MiddlewareFn =
     (f, options) =>
-      (...params: Parameters<typeof f>) =>
-        f(...params).then((res) => mapper(res, options))
-  );
+    (...params: Parameters<typeof f>) =>
+      f(...params).then((res) => mapper(res, options));
+  return use(o, mw);
 }
 
 /**
@@ -656,7 +685,8 @@ export function data<T extends Options>(
  * ```
  */
 export function json<T extends Options>(o: T) {
-  return data(o, (res) => res.json());
+  const options = contentType(o, 'application/json');
+  return data(options, (res) => res.json());
 }
 
 /**

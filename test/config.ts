@@ -1,4 +1,4 @@
-import { describe, it, should } from 'vitest';
+import { describe, it, should, expect } from 'vitest';
 import {
   url,
   appendUrl,
@@ -26,7 +26,10 @@ import {
   mergeQuery,
   querySet,
   queryAppend,
+  withRetry,
+  withTimeout,
 } from '@/index';
+import type { MiddlewareFn } from '@/index';
 import { dataSymbol } from '@/constants';
 import { getData } from '@/util';
 
@@ -89,17 +92,49 @@ describe('config-build', function () {
   });
 
   it('middlewares', function () {
-    const mw = [() => ({} as any)];
-    middlewares({}, mw).should.be.eql({
-      middlewares: mw,
-    });
+    const mw: MiddlewareFn = (f) => f;
+    const result = middlewares({}, [mw]);
+    expect(result.middlewares).toHaveLength(1);
+    expect(result.middlewares[0].middleware).toBe(mw);
   });
 
-  it('use', function () {
-    const mw = () => ({} as any);
-    use({}, mw).should.be.eql({
-      middlewares: [mw],
-    });
+  it('use with function', function () {
+    const mw: MiddlewareFn = (f) => f;
+    const result = use({}, mw);
+    expect(result.middlewares).toHaveLength(1);
+    expect(result.middlewares[0].middleware).toBe(mw);
+  });
+
+  it('use with config', function () {
+    const config = withRetry(3);
+    const result = use({}, config);
+    expect(result.middlewares).toHaveLength(1);
+    expect(result.middlewares[0].name).toBe('builtin:retry');
+  });
+
+  it('middlewares type inference', function () {
+    const mw: MiddlewareFn = (f) => f;
+    const result = middlewares({}, [withRetry(3), withTimeout(5000), mw]);
+    expect(result.middlewares).toHaveLength(3);
+
+    type Actual = typeof result.middlewares;
+    type AssertBrand<T, B> = T extends { __brand?: B } ? true : false;
+    const _check0: AssertBrand<Actual[0], 'builtin:retry'> = true;
+    const _check1: AssertBrand<Actual[1], 'builtin:timeout'> = true;
+    const _check2: AssertBrand<Actual[2], 'unknown'> = true;
+    expect(_check0 && _check1 && _check2).toBe(true);
+  });
+
+  it('use chaining type inference', function () {
+    const mw: MiddlewareFn = (f) => f;
+    const result = use(use(use({}, withRetry(3)), withTimeout(5000)), mw);
+
+    type Actual = typeof result.middlewares;
+    type AssertBrand<T, B> = T extends { __brand?: B } ? true : false;
+    const _check0: AssertBrand<Actual[0], 'builtin:retry'> = true;
+    const _check1: AssertBrand<Actual[1], 'builtin:timeout'> = true;
+    const _check2: AssertBrand<Actual[2], 'unknown'> = true;
+    expect(_check0 && _check1 && _check2).toBe(true);
   });
 
   it('retry', function () {
@@ -109,7 +144,7 @@ describe('config-build', function () {
 
   it('mapResponse', async function () {
     const mw = mapResponse({}, (res) => res);
-    const res = await mw.middlewares[0](
+    const res = await mw.middlewares[0].middleware(
       () => Promise.resolve(new Response()),
       mw as any
     )('');
@@ -121,7 +156,7 @@ describe('config-build', function () {
       throw new Error('test');
     });
     try {
-      await mw.middlewares[0](
+      await mw.middlewares[0].middleware(
         () => Promise.resolve(new Response()),
         mw as any
       )('');
@@ -135,7 +170,7 @@ describe('config-build', function () {
     const mw = checkError({}, () => {
       // no error thrown
     });
-    const res = await mw.middlewares[0](
+    const res = await mw.middlewares[0].middleware(
       () => Promise.resolve(new Response('ok')),
       mw as any
     )('');
@@ -144,7 +179,7 @@ describe('config-build', function () {
 
   it('data', async function () {
     const mw = data({}, (res) => res.json());
-    const res = await mw.middlewares[0](
+    const res = await mw.middlewares[0].middleware(
       () =>
         Promise.resolve(
           new Response('{}', {
@@ -157,9 +192,22 @@ describe('config-build', function () {
     getData<any>(res).should.be.eql({});
   });
 
+  it('data should skip if already has data', async function () {
+    const mw = data({}, (res) => res.json());
+    const originalRes = new Response('{}');
+    (originalRes as any)[dataSymbol] = { existing: true };
+
+    const res = await mw.middlewares[0].middleware(
+      () => Promise.resolve(originalRes),
+      mw as any
+    )('');
+
+    getData<any>(res).should.be.eql({ existing: true });
+  });
+
   it('json', async function () {
     const mw = json({});
-    const res = await mw.middlewares[0](
+    const res = await mw.middlewares[0].middleware(
       () =>
         Promise.resolve(
           new Response('{}', {
@@ -173,7 +221,7 @@ describe('config-build', function () {
 
   it('text', async function () {
     const mw = text({});
-    const res = await mw.middlewares[0](
+    const res = await mw.middlewares[0].middleware(
       () => Promise.resolve(new Response('text')),
       mw as any
     )('');
@@ -182,7 +230,7 @@ describe('config-build', function () {
 
   it('blob', async function () {
     const mw = blob({});
-    const res = await mw.middlewares[0](
+    const res = await mw.middlewares[0].middleware(
       () => Promise.resolve(new Response(new Blob())),
       mw as any
     )('');
