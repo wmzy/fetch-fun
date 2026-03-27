@@ -21,7 +21,7 @@
     "preview": "vite preview",
     "prepublishOnly": "npm run build -- --emptyOutDir",
     "postpublish": "git push --follow-tags",
-    "coverage": "vitest run --coverage",
+    "coverage": "vitest run --coverage --coverage.reporter=lcov",
     "lint": "eslint --fix src test",
     "test": "vitest",
     "start": "vitest watch"
