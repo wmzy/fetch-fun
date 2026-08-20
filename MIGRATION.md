@@ -238,6 +238,9 @@ import { fetch } from 'fetch-fun/dist/index.mjs'; // deep import, new path
 - `RetryOptions.shouldRetry` and `RetryOptions.maxRetryAfter` (see Breaking changes #3).
 - Query values widen to `string | number | boolean` in `query` / `mergeQuery` / `querySet` / `queryAppend` — stringified with `String()` at runtime (`true` → `'true'`), tracked as string literals at the type level (`querySet(o, 'page', 1)` tracks `'1'`).
 - `Method` accepts arbitrary custom strings (`string & {}`).
+- Response readers: `arrayBuffer(o)` and `formData(o)` join `json` / `text` / `blob`; `json(o, parseJson?)` accepts a custom parser (e.g. a `JSON.parse` reviver reviving `Date`s) whose return type flows into `fetchData` inference.
+- `withAuth(credentials, type = 'Bearer')` — the middleware now supports any auth scheme (`'Basic' | 'Bearer' | 'Digest' | string`), matching the `auth(o, type, credentials)` config function; single-argument calls stay Bearer.
+- Bundle guardrails in CI: `size-limit` (full client ≈ 5 kB min+gzip; a `create` + `url` + `fetchJSON` + `json` app ≈ 2 kB) and a tree-shaking verification script asserting `withRetry` / `withAuth` / `withLogging` / `withProgress` code is dropped when unused (`npm run size`, `npm run verify:tree-shaking`).
 
 ### Migrate
 

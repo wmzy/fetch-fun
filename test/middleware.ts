@@ -1035,6 +1035,56 @@ describe('Middleware Ordering', () => {
       expect(headers.get('Accept')).toBe('text/plain');
     });
 
+    it('withAuth should support Basic type via template, matching config-side auth()', async () => {
+      // No automatic base64: like auth(o, type, credentials), the value is
+      // the plain `${type} ${credentials}` template.
+      const config = withAuth('user:pass', 'Basic');
+      let capturedInit: RequestInit | undefined;
+      const mockFetch = vi.fn().mockImplementation((_, init) => {
+        capturedInit = init;
+        return Promise.resolve(new Response('ok'));
+      });
+
+      const wrappedFetch = config.middleware(mockFetch as any, {} as any);
+      await wrappedFetch('https://example.com', undefined);
+
+      expect(
+        new Headers(capturedInit?.headers).get('Authorization')
+      ).toBe('Basic user:pass');
+    });
+
+    it('withAuth should default to Bearer when type is omitted (regression)', async () => {
+      const config = withAuth('my-token');
+      let capturedInit: RequestInit | undefined;
+      const mockFetch = vi.fn().mockImplementation((_, init) => {
+        capturedInit = init;
+        return Promise.resolve(new Response('ok'));
+      });
+
+      const wrappedFetch = config.middleware(mockFetch as any, {} as any);
+      await wrappedFetch('https://example.com', undefined);
+
+      expect(
+        new Headers(capturedInit?.headers).get('Authorization')
+      ).toBe('Bearer my-token');
+    });
+
+    it('withAuth should pass through a custom scheme type verbatim', async () => {
+      const config = withAuth('ticket-abc', 'HOBA');
+      let capturedInit: RequestInit | undefined;
+      const mockFetch = vi.fn().mockImplementation((_, init) => {
+        capturedInit = init;
+        return Promise.resolve(new Response('ok'));
+      });
+
+      const wrappedFetch = config.middleware(mockFetch as any, {} as any);
+      await wrappedFetch('https://example.com', undefined);
+
+      expect(
+        new Headers(capturedInit?.headers).get('Authorization')
+      ).toBe('HOBA ticket-abc');
+    });
+
     it('withLogging middleware should log request and response', async () => {
       const logs: { msg: string; data?: unknown }[] = [];
       const logger = (msg: string, data?: unknown) => logs.push({ msg, data });

@@ -24,6 +24,8 @@ import {
   json,
   text,
   blob,
+  arrayBuffer,
+  formData,
   body,
   jsonBody,
   signal,
@@ -474,6 +476,71 @@ describe('config-build', function () {
     getData<any>(res).should.be.instanceof(Blob);
   });
 
+  it('arrayBuffer', async function () {
+    const mw = arrayBuffer({});
+    const res = await mw.middlewares[0].middleware(
+      () => Promise.resolve(new Response(new Uint8Array([1, 2, 3]))),
+      mw as any
+    )('');
+    const buf = getData<ArrayBuffer>(res);
+    buf.should.be.instanceof(ArrayBuffer);
+    Array.from(new Uint8Array(buf)).should.be.eql([1, 2, 3]);
+  });
+
+  it('formData', async function () {
+    const mw = formData({});
+    const multipart =
+      '--ff\r\n' +
+      'Content-Disposition: form-data; name="field"\r\n' +
+      '\r\n' +
+      'value\r\n' +
+      '--ff--\r\n';
+    const res = await mw.middlewares[0].middleware(
+      () =>
+        Promise.resolve(
+          new Response(multipart, {
+            headers: { 'Content-Type': 'multipart/form-data; boundary=ff' },
+          })
+        ),
+      mw as any
+    )('');
+    const fd = getData<FormData>(res);
+    fd.should.be.instanceof(FormData);
+    expect(fd.get('field')).to.equal('value');
+  });
+
+  it('json with a custom parser', async function () {
+    const mw = json(
+      {},
+      (raw) =>
+        JSON.parse(raw, (k, v) => (k === 'at' ? new Date(v) : v)) as {
+          at: Date;
+        }
+    );
+    const res = await mw.middlewares[0].middleware(
+      () =>
+        Promise.resolve(new Response('{"at":"2024-01-02T03:04:05.000Z"}')),
+      mw as any
+    )('');
+    const parsed = getData<{ at: Date }>(res);
+    parsed.at.should.be.instanceof(Date);
+    parsed.at.toISOString().should.be.eql('2024-01-02T03:04:05.000Z');
+  });
+
+  it('json without a parser keeps the default behavior', async function () {
+    const mw = json({});
+    const res = await mw.middlewares[0].middleware(
+      () =>
+        Promise.resolve(
+          new Response('{"n":1}', {
+            headers: { 'Content-Type': 'application/json' },
+          })
+        ),
+      mw as any
+    )('');
+    getData<any>(res).should.be.eql({ n: 1 });
+  });
+
   it('data reader type flows into fetchData without explicit generics', () => {
     // type-level only: the thunks are never invoked, no request is made
     const viaData = () =>
@@ -498,6 +565,21 @@ describe('config-build', function () {
     expectTypeOf(viaText).returns.resolves.toEqualTypeOf<string>();
     const viaBlob = () => create().pipe(url, '/u').pipe(blob).pipe(fetchData);
     expectTypeOf(viaBlob).returns.resolves.toEqualTypeOf<Blob>();
+  });
+
+  it('arrayBuffer/formData/json-parser reader types flow into fetchData', () => {
+    const viaArrayBuffer = () =>
+      create().pipe(url, '/u').pipe(arrayBuffer).pipe(fetchData);
+    expectTypeOf(viaArrayBuffer).returns.resolves.toEqualTypeOf<ArrayBuffer>();
+    const viaFormData = () =>
+      create().pipe(url, '/u').pipe(formData).pipe(fetchData);
+    expectTypeOf(viaFormData).returns.resolves.toEqualTypeOf<FormData>();
+    const viaParser = () =>
+      create()
+        .pipe(url, '/u')
+        .pipe(json, (raw: string) => JSON.parse(raw) as { at: Date })
+        .pipe(fetchData);
+    expectTypeOf(viaParser).returns.resolves.toEqualTypeOf<{ at: Date }>();
   });
 
   it('explicit fetchData/fetchJSON generics still narrow the result', () => {

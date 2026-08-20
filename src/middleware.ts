@@ -530,20 +530,36 @@ export function withTimeout(ms: number) {
 }
 
 /**
- * Creates a Bearer token authentication middleware configuration.
+ * Creates an authentication middleware configuration.
  *
  * Name: 'builtin:auth'
  * Position: inner of 'builtin:retry' (auth is applied on each retry)
  *
- * @param token - The Bearer token
+ * Mirrors config-side `auth(o, type, credentials)`: the header value is the
+ * template `${type} ${credentials}` with no extra encoding, so callers pass
+ * already-encoded credentials (e.g. base64 for Basic).
+ *
+ * @param credentials - The credentials string placed after the auth type
+ * @param type - Authentication scheme ('Basic' | 'Bearer' | 'Digest' or any
+ *   custom scheme string); defaults to 'Bearer' for backward compatibility
  * @returns A middleware configuration with proper naming and positioning
  *
  * @example
  * ```ts
+ * // Bearer (default)
  * client.pipe(use, withAuth('your-jwt-token'))
+ *
+ * // Basic — pass pre-encoded base64 credentials
+ * client.pipe(use, withAuth(btoa('user:pass'), 'Basic'))
+ *
+ * // Custom scheme
+ * client.pipe(use, withAuth('ticket', 'HOBA'))
  * ```
  */
-export function withAuth(token: string) {
+export function withAuth(
+  credentials: string,
+  type: 'Basic' | 'Bearer' | 'Digest' | (string & {}) = 'Bearer'
+) {
   return {
     name: 'builtin:auth' as const,
     inner: 'builtin:retry' as const,
@@ -553,7 +569,7 @@ export function withAuth(token: string) {
       // packed into a Headers instance. Native fetch accepts the
       // instance directly.
       const headers = new Headers(init?.headers);
-      headers.set('Authorization', `Bearer ${token}`);
+      headers.set('Authorization', `${type} ${credentials}`);
       return f(input, { ...init, headers });
     }) as MiddlewareFn,
   };

@@ -1007,7 +1007,11 @@ export function data<T extends Options, R>(
 /**
  * Adds JSON response parsing middleware.
  *
- * Automatically parses the response body as JSON.
+ * Automatically parses the response body as JSON. Pass a custom
+ * `parseJson` function to control parsing (e.g. revive `Date` fields);
+ * the function receives the raw response text and its return type
+ * becomes the inferred data type. Without a parser the behavior is
+ * `JSON.parse` of the response text.
  *
  * **Breaking change:** this function no longer sets a `Content-Type:
  * application/json` request header — it only configures response parsing,
@@ -1017,6 +1021,7 @@ export function data<T extends Options, R>(
  * with {@link contentType} / {@link header}.
  *
  * @param o - The options object to modify
+ * @param parseJson - Optional custom parser for the raw response text
  * @returns A new options object with JSON parsing middleware added
  *
  * @example
@@ -1024,14 +1029,24 @@ export function data<T extends Options, R>(
  * const response = await client.pipe(url, '/api/data').pipe(json).pipe(fetch);
  * const data = getData(response);
  * ```
+ *
+ * @example
+ * ```ts
+ * // Revive ISO date strings into Date instances
+ * const response = await client
+ *   .pipe(url, '/api/event')
+ *   .pipe(json, (raw) => JSON.parse(raw, (k, v) => (k === 'at' ? new Date(v) : v)))
+ *   .pipe(fetch);
+ * ```
  */
 export function json<T extends Options, D = unknown>(
-  o: T
+  o: T,
+  parseJson: (raw: string) => D = (raw) => JSON.parse(raw) as D
 ): T & {
   middlewares: [MiddlewareEntry, ...MiddlewareEntry[]];
   [readDataSymbol]: (res: Response) => Promise<D>;
 } {
-  return data(o, (res) => res.json());
+  return data(o, async (res) => parseJson(await res.text()));
 }
 
 /**
@@ -1078,6 +1093,53 @@ export function blob<T extends Options>(
   [readDataSymbol]: (res: Response) => Promise<Blob>;
 } {
   return data(o, (res) => res.blob());
+}
+
+/**
+ * Adds ArrayBuffer response parsing middleware.
+ *
+ * Automatically reads the response body as an ArrayBuffer.
+ *
+ * @param o - The options object to modify
+ * @returns A new options object with ArrayBuffer parsing middleware added
+ *
+ * @example
+ * ```ts
+ * const response = await client.pipe(url, '/api/file').pipe(arrayBuffer).pipe(fetch);
+ * const buffer = getData<ArrayBuffer>(response);
+ * ```
+ */
+export function arrayBuffer<T extends Options>(
+  o: T
+): T & {
+  middlewares: [MiddlewareEntry, ...MiddlewareEntry[]];
+  [readDataSymbol]: (res: Response) => Promise<ArrayBuffer>;
+} {
+  return data(o, (res) => res.arrayBuffer());
+}
+
+/**
+ * Adds FormData response parsing middleware.
+ *
+ * Automatically reads the response body as FormData (e.g. a
+ * `multipart/form-data` response).
+ *
+ * @param o - The options object to modify
+ * @returns A new options object with FormData parsing middleware added
+ *
+ * @example
+ * ```ts
+ * const response = await client.pipe(url, '/api/upload').pipe(formData).pipe(fetch);
+ * const fields = getData<FormData>(response);
+ * ```
+ */
+export function formData<T extends Options>(
+  o: T
+): T & {
+  middlewares: [MiddlewareEntry, ...MiddlewareEntry[]];
+  [readDataSymbol]: (res: Response) => Promise<FormData>;
+} {
+  return data(o, (res) => res.formData());
 }
 
 /**

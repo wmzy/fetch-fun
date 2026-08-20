@@ -31,6 +31,8 @@
     "lint": "eslint --fix src test",
     "lint:pkg": "publint --strict",
     "attw": "attw --pack .",
+    "size": "size-limit",
+    "verify:tree-shaking": "node scripts/verify-tree-shaking.mjs",
     "test": "vitest",
     "start": "vitest watch"
   },
@@ -60,6 +62,24 @@
     "dist",
     "src"
   ],
+  "size-limit": [
+    {
+      "name": "full bundle (dist/index.mjs, min+gz)",
+      "path": "dist/index.mjs",
+      "disablePlugins": [
+        "@size-limit/esbuild"
+      ],
+      "gzip": true,
+      "limit": "20 KB"
+    },
+    {
+      "name": "minimal usage: create/url/fetchJSON/json (min+gz)",
+      "path": "src/index.ts",
+      "import": "{ create, url, fetchJSON, json }",
+      "gzip": true,
+      "limit": "10 KB"
+    }
+  ],
   "lint-staged": {
     "*.js": [
       "cross-env NODE_ENV=production eslint --fix",
@@ -78,6 +98,8 @@
   },
   "devDependencies": {
     "@arethetypeswrong/cli": "^0.18.5",
+    "@size-limit/esbuild": "^13.0.3",
+    "@size-limit/file": "^13.0.3",
     "@vitest/coverage-v8": "^4.0.18",
     "commitizen": "^4.3.1",
     "cross-env": "^10.1.0",
@@ -86,6 +108,7 @@
     "husky": "^9.1.7",
     "lint-staged": "^16.3.2",
     "publint": "^0.3.24",
+    "size-limit": "^13.0.3",
     "tools-config": "^0.2.3",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.56.1",

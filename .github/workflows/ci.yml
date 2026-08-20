@@ -97,6 +97,12 @@ jobs:
     - name: Build
       run: npm run build
 
+    - name: Check size limits
+      run: npm run size
+
+    - name: Verify tree-shaking
+      run: npm run verify:tree-shaking
+
     - name: Check package with publint
       run: npm run lint:pkg
 
