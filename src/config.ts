@@ -1,4 +1,5 @@
 import { createRetry, normalizeMiddleware } from './middleware';
+import type { RetryOptions } from './middleware';
 import type {
   AppendQueryType,
   Fetchable,
@@ -11,10 +12,14 @@ import type {
   MapMiddlewares,
   Options,
   QueryType,
+  SchemaOutput,
   SetQueryType,
+  StandardSchema,
   TypedURLSearchParams,
 } from './types';
-import { dataSymbol, readDataSymbol } from './constants';
+import { readDataSymbol, validateSymbol } from './constants';
+import { getData, hasData, setData } from './util';
+import { ValidationError } from './errors';
 
 /**
  * Sets the HTTP method for the request.
@@ -82,6 +87,12 @@ export function appendUrl<
 
 /**
  * Sets the base URL prefix for all requests.
+ *
+ * At fetch time the final URL is built by joining `baseUrl` and `url` with
+ * slash normalization (trailing slashes on the base and leading slashes on
+ * the path collapse to a single `/`); an absolute `url` bypasses the base.
+ * A `baseUrl` carrying its own query string is not supported — use the
+ * `query`/`mergeQuery` config functions instead.
  *
  * @param o - The options object to modify
  * @param baseUrl - The base URL (e.g., 'https://api.example.com')
@@ -294,25 +305,35 @@ export function signal<T extends Options>(
 }
 
 /**
- * Sets a timeout for the request using AbortSignal.timeout().
+ * Sets a per-request timeout budget.
  *
- * This is a convenience wrapper around `signal` with `AbortSignal.timeout()`.
+ * The value is stored as `timeoutMs` on the options object; no timer starts
+ * until the request actually executes (`fetch` creates a fresh
+ * `AbortSignal.timeout(ms)` per attempt). Piping `timeout` is therefore lazy
+ * and side-effect free: reusing a client later still gets a full budget, and
+ * a later `timeout` pipe overwrites an earlier value. An existing `signal`
+ * is honored — both are combined with `AbortSignal.any`.
+ *
+ * Requires `AbortSignal.any` (Node.js >= 20.3.0 or a modern browser).
  *
  * @param o - The options object to modify
- * @param ms - The timeout in milliseconds
- * @returns A new options object with the timeout signal set
+ * @param ms - The timeout budget in milliseconds
+ * @returns A new options object with `timeoutMs` set
  *
  * @example
  * ```ts
- * // Timeout after 5 seconds
+ * // Each request gets 5 seconds, counted from when it starts
  * client.pipe(timeout, 5000)
  * ```
  */
 export function timeout<T extends Options>(
   o: T,
   ms: number
-): T & { signal: AbortSignal } {
-  return signal(o, AbortSignal.timeout(ms));
+): T & { timeoutMs: number } {
+  return {
+    ...o,
+    timeoutMs: ms,
+  };
 }
 
 /**
@@ -555,23 +576,55 @@ export function use<T extends Options, const M extends MiddlewareInput>(
 }
 
 /**
- * Adds retry functionality with exponential backoff.
+ * Adds retry functionality with a status/method/error-aware policy.
  *
- * Retries failed requests up to the specified number of times.
- * Uses exponential backoff with jitter (initial: 1s, max: 10s, multiplier: 2).
+ * Retries failed requests up to `maxRetries` times, but only when it is
+ * safe and sensible to do so:
+ *
+ * - Only requests whose method is (by default) idempotent — `GET`, `HEAD`,
+ *   `OPTIONS`, `TRACE`, `PUT`, `DELETE` — are retried. Non-idempotent
+ *   methods like `POST`/`PATCH` never retry, to avoid duplicating side
+ *   effects.
+ * - Resolved responses retry only on transient statuses (default:
+ *   `408, 425, 429, 500, 502, 503, 504`); a 404 resolves as-is instead of
+ *   burning retries.
+ * - Rejected attempts retry on network errors, timeouts, and unknown
+ *   errors; `HTTPError` retries only for retryable statuses, while
+ *   `ValidationError` and `asNotRetryError`-wrapped errors never retry.
+ * - Waits use exponential backoff with jitter (initial: 1s, max: 10s,
+ *   multiplier: 2), overridden by a parseable non-past `Retry-After`
+ *   header when `respectRetryAfter` is true (default).
+ *
+ * **Behavior change from the previous unconditional retry:** the old
+ * implementation retried every failure up to `maxRetries` times regardless
+ * of method, status, or error type.
  *
  * @param o - The options object to modify
- * @param maxRetries - Maximum number of retry attempts
+ * @param maxRetries - Maximum number of retry attempts (the initial attempt
+ * is not counted)
+ * @param opts - Policy overrides: `statuses`, `methods`, `respectRetryAfter`,
+ * and `delay` backoff tuning (see `RetryOptions`)
  * @returns A new options object with retry middleware added
  *
  * @example
  * ```ts
- * // Retry up to 3 times on failure
+ * // Retry idempotent requests up to 3 times on transient failures
  * client.pipe(retry, 3)
+ *
+ * // Custom policy: retry only 503, also for POST, 5s initial delay
+ * client.pipe(retry, 3, {
+ *   statuses: [503],
+ *   methods: ['GET', 'POST'],
+ *   delay: { initial: 5000 },
+ * })
  * ```
  */
-export function retry<T extends Options>(o: T, maxRetries: number) {
-  return use(o, createRetry(maxRetries));
+export function retry<T extends Options>(
+  o: T,
+  maxRetries: number,
+  opts?: RetryOptions
+) {
+  return use(o, createRetry(maxRetries, opts));
 }
 
 /**
@@ -651,29 +704,43 @@ export function checkError<T extends Options>(
  * })
  * ```
  */
-export function data<T extends Options>(
+export function data<T extends Options, R>(
   o: T,
-  reader: (res: Response) => unknown
-) {
+  reader: (res: Response) => R
+): T & {
+  middlewares: [MiddlewareEntry, ...MiddlewareEntry[]];
+  [readDataSymbol]: (res: Response) => R;
+} {
   const options = {
     ...o,
     [readDataSymbol]: reader,
   };
   return mapResponse(options, async (res, finalOptions) => {
-    if (dataSymbol in res) return res;
+    if (hasData(res)) return res;
 
     const currentReader = (finalOptions as any)[readDataSymbol] as (
       res: Response
     ) => unknown;
-    const data = await currentReader(res);
-    return { ...res, [dataSymbol]: data };
-  });
+    setData(res, await currentReader(res));
+    await validateData(res, finalOptions);
+    return res;
+  }) as unknown as T & {
+    middlewares: [MiddlewareEntry, ...MiddlewareEntry[]];
+    [readDataSymbol]: (res: Response) => R;
+  };
 }
 
 /**
  * Adds JSON response parsing middleware.
  *
  * Automatically parses the response body as JSON.
+ *
+ * **Breaking change:** this function no longer sets a `Content-Type:
+ * application/json` request header — it only configures response parsing,
+ * so a GET request with `json()` no longer sends a meaningless header.
+ * To send JSON, use {@link jsonBody} (which sets both body and
+ * `Content-Type: application/json`), or set request headers explicitly
+ * with {@link contentType} / {@link header}.
  *
  * @param o - The options object to modify
  * @returns A new options object with JSON parsing middleware added
@@ -684,9 +751,13 @@ export function data<T extends Options>(
  * const data = getData(response);
  * ```
  */
-export function json<T extends Options>(o: T) {
-  const options = contentType(o, 'application/json');
-  return data(options, (res) => res.json());
+export function json<T extends Options, D = unknown>(
+  o: T
+): T & {
+  middlewares: [MiddlewareEntry, ...MiddlewareEntry[]];
+  [readDataSymbol]: (res: Response) => Promise<D>;
+} {
+  return data(o, (res) => res.json());
 }
 
 /**
@@ -703,7 +774,12 @@ export function json<T extends Options>(o: T) {
  * const content = getData(response);
  * ```
  */
-export function text<T extends Options>(o: T) {
+export function text<T extends Options>(
+  o: T
+): T & {
+  middlewares: [MiddlewareEntry, ...MiddlewareEntry[]];
+  [readDataSymbol]: (res: Response) => Promise<string>;
+} {
   return data(o, (res) => res.text());
 }
 
@@ -721,6 +797,101 @@ export function text<T extends Options>(o: T) {
  * const file = getData<Blob>(response);
  * ```
  */
-export function blob<T extends Options>(o: T) {
+export function blob<T extends Options>(
+  o: T
+): T & {
+  middlewares: [MiddlewareEntry, ...MiddlewareEntry[]];
+  [readDataSymbol]: (res: Response) => Promise<Blob>;
+} {
   return data(o, (res) => res.blob());
+}
+
+/**
+ * Checks whether a value duck-types as a Standard Schema v1 schema:
+ * a `~standard` property whose `version` is 1 and whose `validate`
+ * is a function.
+ */
+function isStandardSchema(v: unknown): v is StandardSchema {
+  return (
+    typeof v === 'object' &&
+    v !== null &&
+    '~standard' in v &&
+    typeof (v as StandardSchema)['~standard'] === 'object' &&
+    (v as StandardSchema)['~standard'] !== null &&
+    (v as StandardSchema)['~standard'].version === 1 &&
+    typeof (v as StandardSchema)['~standard'].validate === 'function'
+  );
+}
+
+/**
+ * Attaches a Standard Schema v1 schema to the options so the parsed
+ * response data is validated after the data reader middleware runs —
+ * regardless of pipe order.
+ *
+ * On success, a transformed/defaulted `result.value` replaces the stored
+ * data. On failure, `fetchData`/`fetchJSON` reject with a
+ * {@link ValidationError} carrying the schema issues. Validation is
+ * skipped for non-2xx responses so {@link HTTPError} semantics stay
+ * intact.
+ *
+ * Works with any Standard Schema v1 library (Zod, Valibot, ArkType, ...)
+ * via duck typing — zero runtime dependencies.
+ *
+ * @param o - The options object to modify
+ * @param schema - A Standard Schema v1 schema object
+ * @returns A new options object with the schema attached
+ * @throws {TypeError} When `schema` is not a Standard Schema v1 object
+ *
+ * @example
+ * ```ts
+ * const user = await client
+ *   .pipe(url, '/users/1')
+ *   .pipe(validate, UserSchema) // Zod/Valibot/ArkType schema
+ *   .pipe(fetchJSON);
+ * ```
+ */
+export function validate<T extends Options, S extends StandardSchema>(
+  o: T,
+  schema: S
+): Omit<T, typeof readDataSymbol> & {
+  [readDataSymbol]: (res: Response) => Promise<SchemaOutput<S>>;
+} {
+  if (!isStandardSchema(schema)) {
+    throw new TypeError(
+      "validate() expects a Standard Schema v1 object: one with a '~standard' property of the form { version: 1, validate(value) }, as provided by Zod, Valibot, ArkType, etc."
+    );
+  }
+  return { ...o, [validateSymbol]: schema } as unknown as Omit<
+    T,
+    typeof readDataSymbol
+  > & {
+    [readDataSymbol]: (res: Response) => Promise<SchemaOutput<S>>;
+  };
+}
+
+/**
+ * Runs the schema attached via {@link validate} against the parsed
+ * response data, replacing it with the validated output on success.
+ *
+ * Skipped for non-2xx responses (`!res.ok`) so `fetchData` keeps throwing
+ * {@link HTTPError} and the raw `fetch()` escape hatch stays non-throwing.
+ */
+async function validateData(
+  res: Response,
+  finalOptions: Fetchable
+): Promise<void> {
+  if (!res.ok) return;
+  const schema = (finalOptions as any)[validateSymbol] as
+    | StandardSchema
+    | undefined;
+  if (!schema) return;
+
+  const data = getData(res);
+  const result = await schema['~standard'].validate(data);
+  if (result.issues && result.issues.length > 0) {
+    throw new ValidationError(result.issues, data);
+  }
+  if (result.value !== undefined) {
+    setData(res, result.value);
+  }
 }

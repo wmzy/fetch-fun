@@ -8,9 +8,12 @@ import {
   timeout,
   retry,
   withAuth,
+  withRetry,
   use,
   method,
+  jsonBody,
 } from '@/index';
+import type { MiddlewareFn } from '../../src/types';
 import { getData } from '@/util';
 
 describe('Adapters Integration Tests', () => {
@@ -38,9 +41,12 @@ describe('Adapters Integration Tests', () => {
       expect(mockFetch).toHaveBeenCalledWith('https://example.com/test', {});
     });
 
-    it('should work with real HTTP request to httpbin.org', async () => {
+    it('should work with HTTP request using injected fetch', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(new Response('ok'));
+
       const client = create({
-        baseUrl: 'https://httpbin.org',
+        fetch: mockFetch,
+        baseUrl: 'https://example.com',
       });
 
       const response = await client
@@ -48,6 +54,7 @@ describe('Adapters Integration Tests', () => {
         .pipe(fetch);
 
       expect(response.ok).toBe(true);
+      expect(mockFetch).toHaveBeenCalledWith('https://example.com/get', {});
     });
   });
 
@@ -87,9 +94,12 @@ describe('Adapters Integration Tests', () => {
       ).rejects.toThrow('ECONNREFUSED');
     });
 
-    it('should make real HTTP request using Node adapter', { timeout: 15000 }, async () => {
+    it('should complete request with timeout using Node-style fetch', async () => {
+      const mockNodeFetch = vi.fn().mockResolvedValue(new Response('ok'));
+
       const client = create({
-        baseUrl: 'https://httpbin.org',
+        fetch: mockNodeFetch as any,
+        baseUrl: 'https://example.com',
       })
         .pipe(timeout, 10000);
 
@@ -98,6 +108,8 @@ describe('Adapters Integration Tests', () => {
         .pipe(fetch);
 
       expect(response.ok).toBe(true);
+      expect(mockNodeFetch).toHaveBeenCalledTimes(1);
+      expect(mockNodeFetch.mock.calls[0]?.[0]).toBe('https://example.com/get');
     });
   });
 
@@ -224,6 +236,37 @@ describe('Adapters Integration Tests', () => {
       expect(capturedHeaders.Authorization).toBe('Bearer test-token-123');
     });
 
+    it('should reject fetch when middlewares form a dependency cycle', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(new Response('ok'));
+      const passthrough: MiddlewareFn = (f) => f;
+
+      const client = create({
+        fetch: mockFetch,
+        url: 'https://example.com/cycle',
+      })
+        .pipe(use, { name: 'a', outer: 'b', middleware: passthrough })
+        .pipe(use, { name: 'b', outer: 'a', middleware: passthrough });
+
+      await expect(async () => client.pipe(fetch)).rejects.toThrow(/cycle/i);
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('should reject fetch when duplicate middleware names are registered', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(new Response('ok'));
+
+      const client = create({
+        fetch: mockFetch,
+        url: 'https://example.com/duplicate',
+      })
+        .pipe(use, withRetry(3))
+        .pipe(use, withRetry(3));
+
+      await expect(async () => client.pipe(fetch)).rejects.toThrow(
+        /Duplicate middleware name "builtin:retry"/
+      );
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
     it('should handle adapter that returns non-Response object', async () => {
       const mockFetch = vi.fn().mockResolvedValue({
         ok: true,
@@ -243,10 +286,15 @@ describe('Adapters Integration Tests', () => {
     });
   });
 
-  describe('real adapter tests', () => {
-    it('should make real GET request', { timeout: 15000 }, async () => {
+  describe('adapter request tests (mocked fetch)', () => {
+    it('should make GET request', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(
+        new Response(null, { status: 200, statusText: 'OK' })
+      );
+
       const client = create({
-        baseUrl: 'https://httpbin.org',
+        fetch: mockFetch,
+        baseUrl: 'https://example.com',
       })
         .pipe(timeout, 10000);
 
@@ -256,11 +304,18 @@ describe('Adapters Integration Tests', () => {
 
       expect(response.ok).toBe(true);
       expect(response.status).toBe(200);
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      expect(mockFetch.mock.calls[0]?.[0]).toBe('https://example.com/get');
     });
 
-    it('should make real POST request', { timeout: 15000 }, async () => {
+    it('should make POST request', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(
+        new Response(null, { status: 200, statusText: 'OK' })
+      );
+
       const client = create({
-        baseUrl: 'https://httpbin.org',
+        fetch: mockFetch,
+        baseUrl: 'https://example.com',
       })
         .pipe(timeout, 10000);
 
@@ -271,11 +326,21 @@ describe('Adapters Integration Tests', () => {
 
       expect(response.ok).toBe(true);
       expect(response.status).toBe(200);
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://example.com/post',
+        expect.objectContaining({ method: 'POST' })
+      );
     });
 
-    it('should send headers correctly', { timeout: 15000 }, async () => {
+    it('should send headers correctly', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(
+        new Response(null, { status: 200, statusText: 'OK' })
+      );
+
       const client = create({
-        baseUrl: 'https://httpbin.org',
+        fetch: mockFetch,
+        baseUrl: 'https://example.com',
+        headers: { Authorization: 'Bearer abc123', 'X-Custom': 'yes' },
       })
         .pipe(timeout, 10000);
 
@@ -284,17 +349,104 @@ describe('Adapters Integration Tests', () => {
         .pipe(fetch);
 
       expect(response.ok).toBe(true);
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://example.com/headers',
+        expect.objectContaining({
+          headers: { Authorization: 'Bearer abc123', 'X-Custom': 'yes' },
+        })
+      );
     });
 
-    it('should handle JSON response', { timeout: 15000 }, async () => {
+    it('should handle JSON response', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ hello: 'world' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      );
+
       const result = await create({
-        baseUrl: 'https://httpbin.org',
+        fetch: mockFetch,
+        baseUrl: 'https://example.com',
       })
         .pipe(timeout, 10000)
         .pipe(url, '/get')
         .pipe(fetchJSON);
 
-      expect(result).toBeDefined();
+      expect(result).toEqual({ hello: 'world' });
+    });
+
+    it('should ignore baseUrl when url is absolute', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(new Response('ok'));
+
+      await create({
+        fetch: mockFetch,
+        baseUrl: 'https://example.com/v1/',
+      })
+        .pipe(timeout, 10000)
+        .pipe(url, 'https://other.example.com/api/data')
+        .pipe(fetch);
+
+      expect(mockFetch.mock.calls[0]?.[0]).toBe('https://other.example.com/api/data');
+    });
+
+    it('should normalize duplicate slashes between baseUrl and url', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(new Response('ok'));
+
+      await create({
+        fetch: mockFetch,
+        baseUrl: 'https://example.com/v1/',
+      })
+        .pipe(timeout, 10000)
+        .pipe(url, '/users')
+        .pipe(fetch);
+
+      expect(mockFetch.mock.calls[0]?.[0]).toBe('https://example.com/v1/users');
+    });
+
+    it('json() should not send a Content-Type request header', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ hello: 'world' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      );
+
+      const result = await create({
+        fetch: mockFetch,
+        baseUrl: 'https://example.com',
+      })
+        .pipe(timeout, 10000)
+        .pipe(url, '/get')
+        .pipe(json)
+        .pipe(fetchJSON);
+
+      expect(result).toEqual({ hello: 'world' });
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      expect(mockFetch.mock.calls[0]?.[1]?.headers).toBeUndefined();
+    });
+
+    it('jsonBody() should set Content-Type and JSON body', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(new Response('ok'));
+
+      await create({
+        fetch: mockFetch,
+        baseUrl: 'https://example.com',
+      })
+        .pipe(timeout, 10000)
+        .pipe(url, '/post')
+        .pipe(method, 'POST')
+        .pipe(jsonBody, { name: 'John' })
+        .pipe(fetch);
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://example.com/post',
+        expect.objectContaining({
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: '{"name":"John"}',
+        })
+      );
     });
   });
 });

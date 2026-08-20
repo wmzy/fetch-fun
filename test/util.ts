@@ -6,6 +6,9 @@ import {
   asNotRetryError,
   isNotRetryError,
   createQuery,
+  getData,
+  setData,
+  hasData,
 } from '@/util';
 import { notRetryErrorSymbol } from '@/constants';
 
@@ -224,6 +227,38 @@ describe('Util Functions', () => {
     it('should return false for non-error objects', () => {
       expect(isNotRetryError({})).toBe(false);
       expect(isNotRetryError({ [notRetryErrorSymbol]: false })).toBe(false);
+    });
+  });
+
+  describe('getData', () => {
+    it('should return data stored via setData', () => {
+      const res = new Response('{}');
+      setData(res, { parsed: true });
+      expect(getData(res)).toEqual({ parsed: true });
+    });
+
+    it('should return undefined when no data was stored', () => {
+      const res = new Response('{}');
+      expect(getData(res)).toBeUndefined();
+    });
+
+    it('hasData should reflect setData', () => {
+      const res = new Response('{}');
+      expect(hasData(res)).toBe(false);
+      setData(res, 'payload');
+      expect(hasData(res)).toBe(true);
+    });
+
+    it('should keep the Response instance intact', () => {
+      const res = new Response('{}', {
+        status: 201,
+        headers: { 'Content-Type': 'application/json' },
+      });
+      setData(res, { ok: true });
+      expect(res).toBeInstanceOf(Response);
+      expect(res.status).toBe(201);
+      expect(res.headers.get('content-type')).toBe('application/json');
+      expect(typeof res.json).toBe('function');
     });
   });
 

@@ -1,7 +1,7 @@
 {
   "name": "fetch-fun",
   "version": "0.4.0",
-  "description": "fetch functions",
+  "description": "Functional fetch toolkit: pipeable config functions over a plain options object, typed data flow, Standard Schema validation, smart retry and per-attempt timeout. Zero dependencies.",
   "main": "dist/index.cjs.js",
   "module": "dist/index.es.js",
   "types": "dist/types/index.d.ts",
@@ -13,6 +13,9 @@
     }
   },
   "sideEffects": false,
+  "engines": {
+    "node": ">=20.3"
+  },
   "scripts": {
     "commit": "lint-staged && git-cz -n",
     "build": "vite build && npm run build:types",
@@ -30,7 +33,15 @@
   },
   "keywords": [
     "fetch",
-    "http"
+    "http",
+    "http-client",
+    "functional",
+    "pipe",
+    "middleware",
+    "typed",
+    "standard-schema",
+    "retry",
+    "timeout"
   ],
   "author": "wmzy",
   "license": "MIT",

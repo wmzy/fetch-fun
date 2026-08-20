@@ -1,4 +1,5 @@
-import { dataSymbol, notRetryErrorSymbol } from './constants';
+import { notRetryErrorSymbol } from './constants';
+import { TimeoutError } from './errors';
 
 /**
  * Returns a Promise that resolves after the specified delay.
@@ -45,6 +46,76 @@ export function sleep(ms: number, signal?: AbortSignal) {
 }
 
 /**
+ * Wraps a fetch function with a per-call timeout signal.
+ *
+ * Each invocation creates a fresh `AbortSignal.timeout(ms)` — so every call,
+ * including every retry attempt by an outer middleware, gets its own time
+ * budget — and combines it with any signal already present in `init` using
+ * `AbortSignal.any` (requires Node.js >= 20.3.0 or a modern browser).
+ *
+ * A timeout abort surfaces as a {@link TimeoutError} with the underlying
+ * `DOMException` attached as `cause`; user-initiated aborts (`AbortError`)
+ * propagate unchanged.
+ *
+ * @param f - The fetch function to wrap
+ * @param ms - The timeout budget in milliseconds
+ * @returns A fetch function that aborts after `ms` per call
+ */
+export function applyTimeout(
+  f: typeof globalThis.fetch,
+  ms: number
+): typeof globalThis.fetch {
+  return async (input, init) => {
+    const timeoutSignal = AbortSignal.timeout(ms);
+    const signal = init?.signal
+      ? AbortSignal.any([init.signal, timeoutSignal])
+      : timeoutSignal;
+    try {
+      return await f(input, { ...init, signal });
+    } catch (e) {
+      if (
+        timeoutSignal.aborted &&
+        e instanceof DOMException &&
+        e.name === 'TimeoutError'
+      ) {
+        throw new TimeoutError(`Request timed out after ${ms}ms`, {
+          cause: e,
+        });
+      }
+      throw e;
+    }
+  };
+}
+
+/**
+ * Module-level store for parsed response data.
+ *
+ * Uses a WeakMap keyed by the original Response so the response's prototype
+ * (status, headers, body, etc.) stays fully intact.
+ */
+const dataStore = new WeakMap<Response, unknown>();
+
+/**
+ * Checks whether parsed data has been stored for a response.
+ *
+ * @param res - The response to inspect
+ * @returns True if data was previously stored via `setData`
+ */
+export function hasData(res: Response): boolean {
+  return dataStore.has(res);
+}
+
+/**
+ * Stores parsed data for a response without altering the response object.
+ *
+ * @param res - The response to attach data to
+ * @param data - The parsed data to store
+ */
+export function setData(res: Response, data: unknown): void {
+  dataStore.set(res, data);
+}
+
+/**
  * Extracts parsed data from a Response object.
  *
  * Use this to retrieve data that was parsed by `data`, `json`, `text`, or `blob` middleware.
@@ -60,7 +131,7 @@ export function sleep(ms: number, signal?: AbortSignal) {
  * ```
  */
 export function getData<T = unknown>(res: Response): T {
-  return (res as any)[dataSymbol] as T;
+  return dataStore.get(res) as T;
 }
 
 /**
@@ -151,6 +222,48 @@ export function backoffDelay(
   const jitter = cappedDelay * 0.25 * (Math.random() * 2 - 1);
 
   return Math.floor(cappedDelay + jitter);
+}
+
+/**
+ * Parses a `Retry-After` response header value into a delay in milliseconds.
+ *
+ * Accepts both formats allowed by RFC 9110:
+ * - Integer seconds: `'3'` → `3000`
+ * - HTTP-date: `'Wed, 21 Oct 2015 07:28:00 GMT'` → milliseconds from now
+ *   until that instant
+ *
+ * Returns `undefined` when the value is missing, empty, matches neither
+ * format, or is an HTTP-date in the past (a non-positive wait is
+ * meaningless — the caller should fall back to its backoff strategy).
+ *
+ * @param header - The raw header value, or `null` when the header is absent
+ * @returns The delay in milliseconds, or `undefined` when unparseable
+ *
+ * @example
+ * ```ts
+ * parseRetryAfter('2');                                  // 2000
+ * parseRetryAfter(new Date(Date.now() + 5000).toUTCString()); // ~5000
+ * parseRetryAfter('soon');                                // undefined
+ * parseRetryAfter('Wed, 21 Oct 2015 07:28:00 GMT');       // undefined (past)
+ * ```
+ */
+export function parseRetryAfter(header: string | null): number | undefined {
+  if (header == null) return undefined;
+  const value = header.trim();
+  if (value === '') return undefined;
+
+  // Integer-seconds form. Values outside the `\d+` grammar (fractional,
+  // negative, units, ...) fall through to the date parse, which rejects
+  // them cleanly.
+  if (/^\d+$/.test(value)) {
+    return Number(value) * 1000;
+  }
+
+  // HTTP-date form
+  const until = Date.parse(value);
+  if (Number.isNaN(until)) return undefined;
+  const ms = until - Date.now();
+  return ms >= 0 ? ms : undefined;
 }
 
 /**

@@ -40,7 +40,11 @@ export function create(o: null): Options & Pipe;
  */
 export function create<T extends Options>(o: T): T & Pipe;
 export function create(o?: any): Options & Pipe {
-  const pipe: PipeFn = function pipe(action, ...params) {
+  const pipe: PipeFn = function pipe(
+    this: Pipe,
+    action: (o: Pipe, ...p: any[]) => any,
+    ...params: any[]
+  ) {
     return action(this, ...params);
   };
 

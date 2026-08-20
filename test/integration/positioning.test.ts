@@ -4,7 +4,6 @@ import {
   url,
   fetch,
   use,
-  withRetry,
   withTimeout,
   withAuth,
   withLogging,
@@ -317,12 +316,20 @@ describe('Middleware Positioning Integration Tests', () => {
     });
   });
 
-  describe('real HTTP positioning tests', () => {
-    it('should work with real request using multiple positioned middlewares', async () => {
+  describe('positioned middleware chain over mocked fetch', () => {
+    it('should apply multiple positioned built-in middlewares to a request', async () => {
+      const logs: string[] = [];
+      const logger = (msg: string) => logs.push(msg);
+
+      const mockFetch = vi.fn().mockResolvedValue(
+        new Response('ok', { status: 200 })
+      );
+
       const client = create({
-        baseUrl: 'https://httpbin.org',
+        fetch: mockFetch,
+        baseUrl: 'https://example.com',
       })
-        .pipe(use, withLogging())
+        .pipe(use, withLogging(logger))
         .pipe(use, withTimeout(10000));
 
       const response = await client
@@ -330,6 +337,11 @@ describe('Middleware Positioning Integration Tests', () => {
         .pipe(fetch);
 
       expect(response.ok).toBe(true);
+      // logging sits outer of NORMAL, so it observes the request before the
+      // timeout-level middlewares and the response after them.
+      expect(logs).toEqual(['Request:', 'Response:']);
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      expect(mockFetch.mock.calls[0]?.[0]).toBe('https://example.com/get');
     });
   });
 });

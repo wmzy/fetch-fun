@@ -3,12 +3,14 @@ import {
   create,
   url,
   fetch,
+  fetchData,
   use,
   json,
   retry,
   timeout,
   withAuth,
   withLogging,
+  HTTPError,
 } from '@/index';
 import type { MiddlewareFn } from '@/types';
 import { getData } from '@/util';
@@ -153,10 +155,15 @@ describe('Middleware Chain Integration Tests', () => {
     });
   });
 
-  describe('full middleware chain with real fetch', () => {
-    it('should work with retry and timeout on real request', async () => {
+  describe('full middleware chain with mocked fetch', () => {
+    it('should work with retry and timeout on mocked request', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(
+        new Response('ok', { status: 200 })
+      );
+
       const client = create({
-        baseUrl: 'https://httpbin.org',
+        fetch: mockFetch,
+        baseUrl: 'https://example.com',
       })
         .pipe(retry, 2)
         .pipe(timeout, 10000);
@@ -167,14 +174,21 @@ describe('Middleware Chain Integration Tests', () => {
 
       expect(response.ok).toBe(true);
       expect(response.status).toBe(200);
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      expect(mockFetch.mock.calls[0]?.[0]).toBe('https://example.com/get');
     });
 
-    it('should handle multiple middlewares with real request', async () => {
+    it('should handle multiple middlewares with mocked request', async () => {
       const logs: Array<{ msg: string; data?: unknown }> = [];
       const logger = (msg: string, data?: unknown) => logs.push({ msg, data });
 
+      const mockFetch = vi.fn().mockResolvedValue(
+        new Response('ok', { status: 200 })
+      );
+
       const client = create({
-        baseUrl: 'https://httpbin.org',
+        fetch: mockFetch,
+        baseUrl: 'https://example.com',
       })
         .pipe(use, withLogging(logger))
         .pipe(timeout, 10000);
@@ -189,9 +203,16 @@ describe('Middleware Chain Integration Tests', () => {
       expect(logs[1]?.msg).toBe('Response:');
     });
 
-    it('should handle authentication middleware with real request', async () => {
+    it('should handle authentication middleware with mocked request', async () => {
+      let capturedHeaders: Record<string, string> = {};
+      const mockFetch = vi.fn().mockImplementation((_, init) => {
+        capturedHeaders = (init?.headers as Record<string, string>) || {};
+        return Promise.resolve(new Response('ok', { status: 200 }));
+      });
+
       const client = create({
-        baseUrl: 'https://httpbin.org',
+        fetch: mockFetch,
+        baseUrl: 'https://example.com',
       })
         .pipe(use, withAuth('test-token'))
         .pipe(timeout, 10000);
@@ -201,6 +222,67 @@ describe('Middleware Chain Integration Tests', () => {
         .pipe(fetch);
 
       expect(response.ok).toBe(true);
+      expect(capturedHeaders.Authorization).toBe('Bearer test-token');
+      expect(mockFetch.mock.calls[0]?.[0]).toBe('https://example.com/headers');
+    });
+
+    it('should retry a transient 503 end-to-end through fetchData + json', async () => {
+      // Cross-layer: the retry middleware sees the resolved 503 (before
+      // fetchData's HTTPError layer), waits, retries, and the json reader
+      // inside the chain parses the eventual 200.
+      const mockFetch = vi
+        .fn()
+        .mockResolvedValueOnce(new Response('try later', { status: 503 }))
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ value: 42 }), {
+            headers: { 'Content-Type': 'application/json' },
+          })
+        );
+
+      const client = create({
+        fetch: mockFetch,
+        baseUrl: 'https://example.com',
+      })
+        .pipe(retry, 2, { delay: { initial: 1 } })
+        .pipe(json);
+
+      const data = await client.pipe(url, '/answer').pipe(fetchData);
+
+      expect(data).toEqual({ value: 42 });
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+      expect(mockFetch.mock.calls[0]?.[0]).toBe('https://example.com/answer');
+      expect(mockFetch.mock.calls[1]?.[0]).toBe('https://example.com/answer');
+    });
+
+    it('should not burn retries on a permanent 404 and surface HTTPError from fetchData', async () => {
+      // Cross-layer: a resolved 404 passes through retry untouched (single
+      // attempt) and only becomes an HTTPError at the fetchData layer,
+      // with the json-parsed error body attached.
+      const mockFetch = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ error: 'missing' }), {
+          status: 404,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      );
+
+      const client = create({
+        fetch: mockFetch,
+        baseUrl: 'https://example.com',
+      })
+        .pipe(retry, 3, { delay: { initial: 1 } })
+        .pipe(json);
+
+      let caught: unknown;
+      try {
+        await client.pipe(url, '/missing').pipe(fetchData);
+      } catch (e) {
+        caught = e;
+      }
+
+      expect(caught).toBeInstanceOf(HTTPError);
+      expect((caught as HTTPError).response.status).toBe(404);
+      expect((caught as HTTPError).data).toEqual({ error: 'missing' });
+      expect(mockFetch).toHaveBeenCalledTimes(1); // single attempt: 404 is permanent
     });
   });
 

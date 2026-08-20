@@ -1,3 +1,5 @@
+import { readDataSymbol } from './constants';
+
 /**
  * HTTP request method types.
  * Includes common methods and allows custom string values.
@@ -225,22 +227,44 @@ export type Options<Q extends QueryType = QueryType> = Omit<
   middlewares?: MiddlewareEntry[];
   /** AbortSignal for request cancellation */
   signal?: AbortSignal;
+  /**
+   * Per-request timeout budget in milliseconds. Stored by `timeout()` and
+   * applied when the request executes: each attempt (including each retry)
+   * gets a fresh `AbortSignal.timeout(ms)` combined with `signal` via
+   * `AbortSignal.any` (Node.js >= 20.3.0).
+   */
+  timeoutMs?: number;
 };
 
 /**
  * Pipe function type for fluent API chaining.
- * Allows calling configuration functions in a chainable manner.
+ *
+ * The first signature is a fast path for actions that take a single function
+ * argument (e.g. {@link data}'s reader). Typing the argument as
+ * `A & ((res: Response) => unknown)` serves two purposes: it gives inline
+ * arrow literals a contextual signature (so `(res)` is typed as `Response`
+ * without an explicit annotation), and it lets the action's own generic
+ * return type — the phantom reader brand — infer from the argument's true
+ * type. The generic variadic path below cannot do the latter for
+ * context-sensitive function literals.
  *
  * @example
  * ```ts
  * client.pipe(url, '/users').pipe(method, 'GET').pipe(fetch)
  * ```
  */
-export type PipeFn = <T extends Pipe, const P extends any[], R>(
-  this: T,
-  action: (o: T, ...p: P) => R,
-  ...params: P
-) => R;
+export type PipeFn = {
+  <T extends Pipe, A, R>(
+    this: T,
+    action: (o: T, a: A) => R,
+    a: A & ((res: Response) => unknown)
+  ): R;
+  <T extends Pipe, const P extends any[], R>(
+    this: T,
+    action: (o: T, ...p: P) => R,
+    ...params: P
+  ): R;
+};
 
 /**
  * Interface providing pipe methods for fluent API.
@@ -269,7 +293,80 @@ export type Client<Q extends QueryType = QueryType> = Options<Q> & Pipe;
 /**
  * A fetchable configuration that has a required URL.
  * This type is required for making actual fetch requests.
+ *
+ * The optional `[readDataSymbol]` member mirrors the runtime reader slot set
+ * by `data()`/`json()`/`text()`/`blob()`. It is optional here so unbranded
+ * options remain valid fetchables; branded options carry the required form
+ * and light up {@link ReaderData} inference in `fetchData`.
  */
 export type Fetchable<Q extends QueryType = QueryType> = {
   url: string;
-} & Options<Q>;
+} & Options<Q> & {
+    [readDataSymbol]?: (res: Response) => unknown;
+  };
+
+/**
+ * Result returned by a Standard Schema v1 `validate` function.
+ *
+ * On success `value` carries the validated (and possibly transformed or
+ * defaulted) output. On failure `issues` is present and non-empty.
+ *
+ * @see {@link https://standardschema.dev | Standard Schema specification}
+ */
+export interface StandardSchemaResult<Output = unknown> {
+  /** The validated output value (may be transformed/defaulted by the schema). */
+  value?: Output;
+  /** Validation issues; present and non-empty when validation failed. */
+  issues?: readonly unknown[];
+}
+
+/**
+ * Minimal subset of the Standard Schema v1 specification needed by
+ * {@link validate}.
+ *
+ * Detected via duck typing at runtime, so schemas from Zod, Valibot,
+ * ArkType or any other Standard Schema vendor work without adapters
+ * or runtime dependencies.
+ *
+ * @see {@link https://standardschema.dev | Standard Schema specification}
+ */
+export interface StandardSchema<Output = unknown> {
+  '~standard': {
+    version: 1;
+    vendor?: string;
+    validate: (
+      value: unknown
+    ) => StandardSchemaResult<Output> | Promise<StandardSchemaResult<Output>>;
+  };
+}
+
+/**
+ * Extracts the phantom response reader type stored on an options object via
+ * the `[readDataSymbol]` slot (set by `data()` and its `json()`/`text()`/
+ * `blob()` shortcuts, rewritten by `validate()`).
+ *
+ * Returns the reader's return type — usually a `Promise` — or `unknown` when
+ * no reader is attached.
+ */
+export type ReaderOf<O> =
+  O extends { [readDataSymbol]: (res: Response) => infer R } ? R : unknown;
+
+/**
+ * The data type a reader will produce: {@link ReaderOf} with `Promise`
+ * unwrapped via `Awaited`, so both sync and async readers resolve to the
+ * final value type.
+ */
+export type ReaderData<O> = Awaited<ReaderOf<O>>;
+
+/**
+ * Extracts the output type of a Standard Schema v1 schema.
+ */
+export type SchemaOutput<S> = S extends StandardSchema<infer O> ? O : never;
+
+/**
+ * Resolves the return type of `fetchData`/`fetchJSON`: when the caller
+ * supplies an explicit type argument it wins; otherwise (`T` left at its
+ * `never` sentinel default) the phantom reader's {@link ReaderData} flows
+ * through. The tuple-wrapped conditional avoids distribution over `never`.
+ */
+export type ResolveData<T, O> = [T] extends [never] ? ReaderData<O> : T;

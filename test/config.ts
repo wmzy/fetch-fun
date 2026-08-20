@@ -1,4 +1,4 @@
-import { describe, it, should, expect } from 'vitest';
+import { describe, it, should, expect, vi, expectTypeOf } from 'vitest';
 import {
   url,
   appendUrl,
@@ -28,10 +28,16 @@ import {
   queryAppend,
   withRetry,
   withTimeout,
+  validate,
+  create,
+  fetchData,
+  fetchJSON,
+  fetch as doFetch,
+  toFetchParams,
 } from '@/index';
-import type { MiddlewareFn } from '@/index';
-import { dataSymbol } from '@/constants';
-import { getData } from '@/util';
+import type { MiddlewareFn, StandardSchema } from '@/index';
+import { validateSymbol } from '@/constants';
+import { getData, setData } from '@/util';
 
 describe('config-build', function () {
   it('url', function () {
@@ -47,6 +53,53 @@ describe('config-build', function () {
   it('baseUrl', function () {
     baseUrl({}, 'https://x.y').should.be.eql({
       baseUrl: 'https://x.y',
+    });
+  });
+
+  describe('url joining (toFetchParams)', function () {
+    it('should use url as-is when no baseUrl is set', function () {
+      toFetchParams({ url: '/users' })[0].should.be.eql('/users');
+    });
+
+    it('should join base path and path with a single slash', function () {
+      toFetchParams({ baseUrl: '/v1', url: '/users' })[0].should.be.eql(
+        '/v1/users'
+      );
+    });
+
+    it('should add the missing slash when url has no leading slash', function () {
+      toFetchParams({ baseUrl: 'https://x.com', url: 'users' })[0].should.be.eql(
+        'https://x.com/users'
+      );
+    });
+
+    it('should collapse duplicate slashes from base tail and url head', function () {
+      toFetchParams({ baseUrl: 'https://x.com/v1/', url: '/users' })[0].should.be.eql(
+        'https://x.com/v1/users'
+      );
+    });
+
+    it('should ignore baseUrl when url is absolute', function () {
+      toFetchParams({
+        baseUrl: 'https://api.example.com',
+        url: 'https://other.example.com/users',
+      })[0].should.be.eql('https://other.example.com/users');
+    });
+
+    it('should append searchParams with & when url already has a query', function () {
+      toFetchParams({
+        baseUrl: 'https://x.com',
+        url: '/users?existing=1',
+        searchParams: new URLSearchParams('page=2'),
+      })[0].should.be.eql('https://x.com/users?existing=1&page=2');
+    });
+
+    it('should append searchParams with ? when url has no query', function () {
+      toFetchParams({
+        baseUrl: 'https://x.com',
+        url: '/users',
+        searchParams: new URLSearchParams('page=2'),
+      })[0].should.be.eql('https://x.com/users?page=2');
     });
   });
 
@@ -192,21 +245,44 @@ describe('config-build', function () {
     getData<any>(res).should.be.eql({});
   });
 
+  it('data should preserve the Response instance', async function () {
+    const mw = data({}, (res) => res.json());
+    const res = await mw.middlewares[0].middleware(
+      () =>
+        Promise.resolve(
+          new Response('{"ok":true}', {
+            status: 201,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        ),
+      mw as any
+    )('');
+
+    res.should.be.instanceof(Response);
+    res.status.should.be.eql(201);
+    expect(res.headers.get('content-type')).to.equal('application/json');
+    res.json.should.be.a('function');
+    getData<any>(res).should.be.eql({ ok: true });
+  });
+
   it('data should skip if already has data', async function () {
     const mw = data({}, (res) => res.json());
     const originalRes = new Response('{}');
-    (originalRes as any)[dataSymbol] = { existing: true };
+    setData(originalRes, { existing: true });
 
     const res = await mw.middlewares[0].middleware(
       () => Promise.resolve(originalRes),
       mw as any
     )('');
 
+    res.should.be.equal(originalRes);
     getData<any>(res).should.be.eql({ existing: true });
   });
 
   it('json', async function () {
     const mw = json({});
+    // json() only configures response parsing; it must not set request headers
+    expect((mw as { headers?: Record<string, string> }).headers).toBeUndefined();
     const res = await mw.middlewares[0].middleware(
       () =>
         Promise.resolve(
@@ -219,6 +295,11 @@ describe('config-build', function () {
     getData<any>(res).should.be.eql({});
   });
 
+  it('json should not touch existing request headers', function () {
+    const o = json(header({}, 'X-Custom', 'yes'));
+    o.headers.should.be.eql({ 'X-Custom': 'yes' });
+  });
+
   it('text', async function () {
     const mw = text({});
     const res = await mw.middlewares[0].middleware(
@@ -228,13 +309,73 @@ describe('config-build', function () {
     getData<any>(res).should.be.eql('text');
   });
 
+  it('chained json and text should not consume the body twice', async function () {
+    const o = text(
+      json({
+        url: 'https://x.y/api',
+        fetch: (async () =>
+          new Response('{"a":1}', {
+            headers: { 'Content-Type': 'application/json' },
+          })) as typeof fetch,
+      })
+    );
+    const res = await doFetch(o);
+
+    res.should.be.instanceof(Response);
+    expect(res.headers.get('content-type')).to.equal('application/json');
+    // the innermost data middleware (text) wins; json's reader is skipped
+    getData<any>(res).should.be.eql('{"a":1}');
+  });
+
   it('blob', async function () {
     const mw = blob({});
     const res = await mw.middlewares[0].middleware(
       () => Promise.resolve(new Response(new Blob())),
       mw as any
     )('');
-    res.should.have.property(dataSymbol);
+    getData<any>(res).should.be.instanceof(Blob);
+  });
+
+  it('data reader type flows into fetchData without explicit generics', () => {
+    // type-level only: the thunks are never invoked, no request is made
+    const viaData = () =>
+      create()
+        .pipe(url, '/u')
+        .pipe(data, (res) => res.json() as Promise<{ id: number }>)
+        .pipe(fetchData);
+    expectTypeOf(viaData).returns.resolves.toEqualTypeOf<{ id: number }>();
+    // a sync reader works too: its return type is awaited
+    const viaSync = () =>
+      create()
+        .pipe(url, '/u')
+        .pipe(data, (res) => res.status)
+        .pipe(fetchData);
+    expectTypeOf(viaSync).returns.resolves.toEqualTypeOf<number>();
+  });
+
+  it('json/text/blob reader types flow into fetchData', () => {
+    const viaJson = () => create().pipe(url, '/u').pipe(json).pipe(fetchData);
+    expectTypeOf(viaJson).returns.resolves.toEqualTypeOf<unknown>();
+    const viaText = () => create().pipe(url, '/u').pipe(text).pipe(fetchData);
+    expectTypeOf(viaText).returns.resolves.toEqualTypeOf<string>();
+    const viaBlob = () => create().pipe(url, '/u').pipe(blob).pipe(fetchData);
+    expectTypeOf(viaBlob).returns.resolves.toEqualTypeOf<Blob>();
+  });
+
+  it('explicit fetchData/fetchJSON generics still narrow the result', () => {
+    type User = { id: number };
+    const viaInstantiation = () =>
+      create()
+        .pipe(url, '/u')
+        .pipe(fetchData<User>);
+    expectTypeOf(viaInstantiation).returns.resolves.toEqualTypeOf<User>();
+    const viaFetchJSON = () => fetchJSON<User>(create().pipe(url, '/u'));
+    expectTypeOf(viaFetchJSON).returns.resolves.toEqualTypeOf<User>();
+  });
+
+  it('fetchData without a reader resolves to unknown', () => {
+    const noReader = () => create().pipe(url, '/u').pipe(fetchData);
+    expectTypeOf(noReader).returns.resolves.toEqualTypeOf<unknown>();
   });
 
   it('body', function () {
@@ -249,8 +390,39 @@ describe('config-build', function () {
   });
 
   it('timeout', function () {
-    const result = timeout({}, 5000);
-    result.signal.should.be.instanceof(AbortSignal);
+    timeout({}, 5000).should.be.eql({ timeoutMs: 5000 });
+  });
+
+  it('timeout is lazy: the timer starts when the request runs, not at pipe time', async function () {
+    const mockFetch = vi.fn().mockImplementation(
+      (_url: string, init?: RequestInit) => {
+        // Real fetch semantics: an already-aborted signal fails the request.
+        if (init?.signal?.aborted) {
+          return Promise.reject(
+            new DOMException('This operation was aborted', 'AbortError')
+          );
+        }
+        return Promise.resolve(new Response('ok'));
+      }
+    );
+
+    const client = timeout(
+      { url: 'https://x.y/api', fetch: mockFetch as any },
+      50
+    );
+
+    // Well past the 50ms budget: with an eager pipe-time timer this request
+    // would abort immediately; lazily it gets a full fresh budget.
+    await new Promise((resolve) => setTimeout(resolve, 80));
+
+    const response = await doFetch(client);
+    expect(response.ok).toBe(true);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(mockFetch.mock.calls[0]?.[1]?.signal?.aborted).toBe(false);
+  });
+
+  it('timeout: a later pipe overwrites the previous value', function () {
+    timeout(timeout({}, 1000), 2000).should.be.eql({ timeoutMs: 2000 });
   });
 
   describe('query', function () {
@@ -350,8 +522,8 @@ describe('config-build', function () {
 
   describe('queryAppend', function () {
     it('should append a single parameter', function () {
-      const result = queryAppend({}, 'tag', 'javascript');
-      result.searchParams.toString().should.be.eql('tag=javascript');
+      const result = queryAppend({}, 'tag', 'b');
+      result.searchParams.toString().should.be.eql('tag=b');
     });
 
     it('should allow duplicate keys', function () {
@@ -369,6 +541,64 @@ describe('config-build', function () {
       const existing = new URLSearchParams('page=1');
       const result = queryAppend({ searchParams: existing }, 'limit', '10');
       result.searchParams.toString().should.be.eql('page=1&limit=10');
+    });
+  });
+
+  describe('validate', function () {
+    const schema: StandardSchema = {
+      '~standard': {
+        version: 1,
+        vendor: 'test',
+        validate: (value: unknown) => ({ value }),
+      },
+    };
+
+    it('should attach the schema to the options', function () {
+      const result = validate({ url: 'https://x.y' }, schema);
+      result.url.should.be.eql('https://x.y');
+      (result as any)[validateSymbol].should.be.equal(schema);
+    });
+
+    it('should throw TypeError for non Standard Schema input', function () {
+      expect(() => validate({}, {} as any)).toThrow(TypeError);
+      expect(() => validate({}, null as any)).toThrow(TypeError);
+      expect(() =>
+        validate(
+          {},
+          { '~standard': { version: 2, validate: () => ({}) } } as any
+        )
+      ).toThrow(/Standard Schema v1/);
+      expect(() =>
+        validate({}, { '~standard': { version: 1 } } as any)
+      ).toThrow(TypeError);
+    });
+
+    it('should converge fetchData to the schema output type', () => {
+      type User = { id: number; name: string };
+      const userSchema: StandardSchema<User> = {
+        '~standard': {
+          version: 1,
+          vendor: 'test',
+          validate: (value: unknown) => ({ value: value as User }),
+        },
+      };
+      const viaSchema = () =>
+        create()
+          .pipe(url, '/u')
+          .pipe(json)
+          .pipe(validate, userSchema)
+          .pipe(fetchData);
+      expectTypeOf(viaSchema).returns.resolves.toEqualTypeOf<User>();
+      // explicit generic still overrides after validate
+      const viaOverride = () =>
+        create()
+          .pipe(url, '/u')
+          .pipe(json)
+          .pipe(validate, userSchema)
+          .pipe(fetchData<{ override: true }>);
+      expectTypeOf(viaOverride).returns.resolves.toEqualTypeOf<{
+        override: true;
+      }>();
     });
   });
 });
