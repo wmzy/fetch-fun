@@ -26,13 +26,12 @@ import type { Options, Pipe, PipeFn } from './types';
  *   .pipe(fetchJSON);
  * ```
  */
-export function create(): Options & Pipe;
 /**
  * Creates a new fetch client with fluent API support.
- * @param o - Pass null to create an empty client
+ * @param o - Pass null (or nothing) to create an empty client
  * @returns A new client with empty options and pipe methods
  */
-export function create(o: null): Options & Pipe;
+export function create(o?: null): Options & Pipe;
 /**
  * Creates a new fetch client with fluent API support.
  * @param o - Initial options to configure the client

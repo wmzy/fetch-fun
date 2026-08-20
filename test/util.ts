@@ -3,6 +3,7 @@ import {
   sleep,
   retry,
   backoffDelay,
+  parseRetryAfter,
   asNotRetryError,
   isNotRetryError,
   createQuery,
@@ -187,6 +188,69 @@ describe('Util Functions', () => {
       expect(Number.isInteger(result)).toBe(true);
 
       vi.restoreAllMocks();
+    });
+  });
+
+  describe('parseRetryAfter', () => {
+    beforeEach(() => {
+      // The `sleep` suite above enables fake timers without restoring them;
+      // HTTP-date parsing depends on a real Date.now().
+      vi.useRealTimers();
+    });
+
+    it('should return undefined for missing or unparseable values', () => {
+      expect(parseRetryAfter(null)).toBeUndefined();
+      expect(parseRetryAfter('')).toBeUndefined();
+      expect(parseRetryAfter('   ')).toBeUndefined();
+      expect(parseRetryAfter('soon')).toBeUndefined();
+      expect(parseRetryAfter('1.5')).toBeUndefined();
+      expect(parseRetryAfter('-3')).toBeUndefined();
+    });
+
+    it('should parse integer seconds without maxMs', () => {
+      expect(parseRetryAfter('0')).toBe(0);
+      expect(parseRetryAfter('2')).toBe(2000);
+      expect(parseRetryAfter(' 30 ')).toBe(30000);
+    });
+
+    it('should parse HTTP-date without maxMs', () => {
+      const header = new Date(Date.now() + 5000).toUTCString();
+
+      const result = parseRetryAfter(header);
+
+      // toUTCString() truncates to whole seconds, so the parsed delay
+      // lands in (4000, 5000] for a +5000ms target.
+      expect(result).toBeGreaterThan(4000);
+      expect(result!).toBeLessThanOrEqual(5000);
+    });
+
+    it('should return undefined for a past HTTP-date', () => {
+      expect(parseRetryAfter('Wed, 21 Oct 2015 07:28:00 GMT')).toBeUndefined();
+    });
+
+    it('should cap parsed delay when maxMs is smaller', () => {
+      expect(parseRetryAfter('30', 5000)).toBe(5000);
+      expect(parseRetryAfter('120', 30000)).toBe(30000);
+    });
+
+    it('should leave parsed delay untouched when maxMs is larger', () => {
+      expect(parseRetryAfter('2', 30000)).toBe(2000);
+      expect(parseRetryAfter('0', 5000)).toBe(0);
+    });
+
+    it('should cap HTTP-date form with maxMs', () => {
+      const header = new Date(Date.now() + 60000).toUTCString();
+
+      expect(parseRetryAfter(header, 5000)).toBe(5000);
+    });
+
+    it('should leave HTTP-date delay untouched when under maxMs', () => {
+      const header = new Date(Date.now() + 2000).toUTCString();
+
+      const result = parseRetryAfter(header, 30000);
+
+      expect(result).toBeGreaterThan(1000);
+      expect(result!).toBeLessThanOrEqual(2000);
     });
   });
 

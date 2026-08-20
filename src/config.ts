@@ -113,17 +113,234 @@ export function baseUrl<T extends Options, U extends string>(
   };
 }
 
-export type QueryInput = ConstructorParameters<typeof URLSearchParams>[0];
+/**
+ * Shared implementation of the method sugar helpers: sets the HTTP method,
+ * replaces the URL when a path is given, and sets a JSON body when one is
+ * given.
+ */
+function applyMethod<M extends Method>(
+  o: Options,
+  m: M,
+  path: string | undefined,
+  json: unknown
+): Omit<Options, 'method'> & { method: M } {
+  const withUrl = path === undefined ? o : url(o, path);
+  const withBody = json === undefined ? withUrl : jsonBody(withUrl, json);
+  return method(withBody, m);
+}
+
+/**
+ * Restores the `url` property for {@link MethodSugar} when no path was
+ * given: the incoming `url` is preserved, or stays optional when absent.
+ */
+type KeepUrl<T> = T extends { url: infer U extends string }
+  ? { url: U }
+  : { url?: string };
+
+/**
+ * Return type of the method sugar helpers ({@link get}, {@link post}, …):
+ * the method is fixed to `M`, and `url` becomes the sugar-provided `path`
+ * when one was given, otherwise the incoming `url` is kept as-is.
+ */
+type MethodSugar<
+  T extends Options,
+  U extends string | undefined,
+  M extends Method,
+> = Omit<T, 'url' | 'method'> & { method: M } & (U extends string
+  ? { url: U }
+  : KeepUrl<T>);
+
+/**
+ * Sets the HTTP method to GET, optionally setting the URL path in one step.
+ *
+ * When `json` is provided, the body is set to its JSON string and
+ * Content-Type to application/json; when omitted, the body is untouched.
+ *
+ * @param o - The options object to modify
+ * @param path - The URL path; when omitted, the existing `url` is kept
+ * @param json - The JSON request body (not to be confused with the
+ * response-parsing {@link json})
+ * @returns A new options object with the method (and optionally url/body) set
+ *
+ * @example
+ * ```ts
+ * client.pipe(get, '/users')
+ * ```
+ */
+export function get<
+  T extends Options,
+  U extends string | undefined = undefined,
+>(o: T, path?: U, json?: unknown): MethodSugar<T, U, 'GET'> {
+  return applyMethod(o, 'GET', path, json) as MethodSugar<T, U, 'GET'>;
+}
+
+/**
+ * Sets the HTTP method to POST, optionally setting the URL path and a JSON
+ * body in one step.
+ *
+ * When `json` is provided, the body is set to its JSON string and
+ * Content-Type to application/json; when omitted, the body is untouched.
+ *
+ * @param o - The options object to modify
+ * @param path - The URL path; when omitted, the existing `url` is kept
+ * @param json - The JSON request body (not to be confused with the
+ * response-parsing {@link json})
+ * @returns A new options object with the method (and optionally url/body) set
+ *
+ * @example
+ * ```ts
+ * client.pipe(post, '/users', { name: 'Alice' })
+ * ```
+ */
+export function post<
+  T extends Options,
+  U extends string | undefined = undefined,
+>(o: T, path?: U, json?: unknown): MethodSugar<T, U, 'POST'> {
+  return applyMethod(o, 'POST', path, json) as MethodSugar<T, U, 'POST'>;
+}
+
+/**
+ * Sets the HTTP method to PUT, optionally setting the URL path and a JSON
+ * body in one step.
+ *
+ * When `json` is provided, the body is set to its JSON string and
+ * Content-Type to application/json; when omitted, the body is untouched.
+ *
+ * @param o - The options object to modify
+ * @param path - The URL path; when omitted, the existing `url` is kept
+ * @param json - The JSON request body (not to be confused with the
+ * response-parsing {@link json})
+ * @returns A new options object with the method (and optionally url/body) set
+ *
+ * @example
+ * ```ts
+ * client.pipe(put, '/users/1', { name: 'Alice' })
+ * ```
+ */
+export function put<
+  T extends Options,
+  U extends string | undefined = undefined,
+>(o: T, path?: U, json?: unknown): MethodSugar<T, U, 'PUT'> {
+  return applyMethod(o, 'PUT', path, json) as MethodSugar<T, U, 'PUT'>;
+}
+
+/**
+ * Sets the HTTP method to PATCH, optionally setting the URL path and a JSON
+ * body in one step.
+ *
+ * When `json` is provided, the body is set to its JSON string and
+ * Content-Type to application/json; when omitted, the body is untouched.
+ *
+ * @param o - The options object to modify
+ * @param path - The URL path; when omitted, the existing `url` is kept
+ * @param json - The JSON request body (not to be confused with the
+ * response-parsing {@link json})
+ * @returns A new options object with the method (and optionally url/body) set
+ *
+ * @example
+ * ```ts
+ * client.pipe(patch, '/users/1', { name: 'Alice' })
+ * ```
+ */
+export function patch<
+  T extends Options,
+  U extends string | undefined = undefined,
+>(o: T, path?: U, json?: unknown): MethodSugar<T, U, 'PATCH'> {
+  return applyMethod(o, 'PATCH', path, json) as MethodSugar<T, U, 'PATCH'>;
+}
+
+/**
+ * Sets the HTTP method to DELETE, optionally setting the URL path and a JSON
+ * body in one step.
+ *
+ * Named `del` rather than `delete` because `delete` is a reserved word and
+ * cannot be used as a function name.
+ *
+ * When `json` is provided, the body is set to its JSON string and
+ * Content-Type to application/json; when omitted, the body is untouched.
+ *
+ * @param o - The options object to modify
+ * @param path - The URL path; when omitted, the existing `url` is kept
+ * @param json - The JSON request body (not to be confused with the
+ * response-parsing {@link json})
+ * @returns A new options object with the method (and optionally url/body) set
+ *
+ * @example
+ * ```ts
+ * client.pipe(del, '/users/1')
+ * ```
+ */
+export function del<
+  T extends Options,
+  U extends string | undefined = undefined,
+>(o: T, path?: U, json?: unknown): MethodSugar<T, U, 'DELETE'> {
+  return applyMethod(o, 'DELETE', path, json) as MethodSugar<T, U, 'DELETE'>;
+}
+
+/**
+ * Sets the HTTP method to HEAD, optionally setting the URL path in one step.
+ *
+ * When `json` is provided, the body is set to its JSON string and
+ * Content-Type to application/json; when omitted, the body is untouched.
+ *
+ * @param o - The options object to modify
+ * @param path - The URL path; when omitted, the existing `url` is kept
+ * @param json - The JSON request body (not to be confused with the
+ * response-parsing {@link json})
+ * @returns A new options object with the method (and optionally url/body) set
+ *
+ * @example
+ * ```ts
+ * client.pipe(head, '/users')
+ * ```
+ */
+export function head<
+  T extends Options,
+  U extends string | undefined = undefined,
+>(o: T, path?: U, json?: unknown): MethodSugar<T, U, 'HEAD'> {
+  return applyMethod(o, 'HEAD', path, json) as MethodSugar<T, U, 'HEAD'>;
+}
+
+/**
+ * Input accepted by {@link query} and {@link mergeQuery}: a query string,
+ * a `URLSearchParams` instance, an array of key/value tuples, or a plain
+ * object. Non-string values (numbers, booleans) are serialized via
+ * `String(value)` before reaching `URLSearchParams`.
+ */
+export type QueryInput =
+  | string
+  | URLSearchParams
+  | readonly (readonly [string, string | number | boolean])[]
+  | readonly string[][]
+  | Record<string, string | number | boolean>;
+
+/**
+ * Normalizes a {@link QueryInput} into a `URLSearchParams`,
+ * stringifying non-string values along the way.
+ */
+function toSearchParams(params: QueryInput): URLSearchParams {
+  if (typeof params === 'string' || params instanceof URLSearchParams) {
+    return new URLSearchParams(params);
+  }
+  if (Array.isArray(params)) {
+    return new URLSearchParams(params.map(([k, v]) => [k, String(v)]));
+  }
+  return new URLSearchParams(
+    Object.entries(params).map(([k, v]) => [k, String(v)])
+  );
+}
 
 /**
  * Sets query parameters, replacing any existing searchParams.
  *
- * Accepts a string or URLSearchParams. For object serialization,
- * use your preferred library (e.g., `qs`, `query-string`) before calling.
- * The searchParams will be appended to the URL in `toFetchParams`.
+ * Accepts a string, URLSearchParams, an array of key/value tuples, or a
+ * plain object. Numbers and booleans are serialized via `String(value)`.
+ * For advanced serialization (nested objects, brackets), use your
+ * preferred library (e.g., `qs`, `query-string`) and pass the resulting
+ * string. The searchParams will be appended to the URL in `toFetchParams`.
  *
  * @param o - The options object to modify
- * @param params - The query string or URLSearchParams
+ * @param params - The query input (string, URLSearchParams, tuples, or object)
  * @returns A new options object with searchParams set
  *
  * @example
@@ -134,6 +351,9 @@ export type QueryInput = ConstructorParameters<typeof URLSearchParams>[0];
  * // With URLSearchParams
  * client.pipe(url, '/users').pipe(query, new URLSearchParams({ page: '1' }))
  *
+ * // With object - numbers and booleans are stringified
+ * client.pipe(url, '/users').pipe(query, { page: 1, active: true })
+ *
  * // With qs library for custom serialization
  * import qs from 'qs';
  * client.pipe(url, '/users').pipe(query, qs.stringify({ tags: ['a', 'b'] }))
@@ -143,24 +363,22 @@ export function query<T extends Options>(
   o: T,
   params: QueryInput
 ): Omit<T, 'searchParams'> & {
-  searchParams: TypedURLSearchParams<QueryType>;
+  searchParams: TypedURLSearchParams;
 } {
   return {
     ...o,
-    searchParams: new URLSearchParams(
-      params
-    ) as TypedURLSearchParams<QueryType>,
+    searchParams: toSearchParams(params) as TypedURLSearchParams,
   };
 }
 
 /**
  * Merges query parameters with existing searchParams.
  *
- * Accepts any value that can be passed to URLSearchParams constructor.
+ * Accepts any {@link QueryInput}. Non-string values are stringified.
  * The searchParams will be appended to the URL in `toFetchParams`.
  *
  * @param o - The options object to modify
- * @param params - The query parameters to merge (string, URLSearchParams, object, etc.)
+ * @param params - The query parameters to merge (string, URLSearchParams, tuples, object)
  * @returns A new options object with merged searchParams
  *
  * @example
@@ -173,7 +391,7 @@ export function query<T extends Options>(
  * client.pipe(url, '/users').pipe(mergeQuery, new URLSearchParams({ limit: '10' }))
  *
  * // With object
- * client.pipe(url, '/users').pipe(mergeQuery, { page: '1', limit: '10' })
+ * client.pipe(url, '/users').pipe(mergeQuery, { page: 1, limit: 10 })
  * ```
  */
 export function mergeQuery<T extends Options>(
@@ -184,7 +402,7 @@ export function mergeQuery<T extends Options>(
     ...o,
     searchParams: new URLSearchParams([
       ...(o.searchParams || []),
-      ...new URLSearchParams(params),
+      ...toSearchParams(params),
     ]) as TypedURLSearchParams,
   };
 }
@@ -192,6 +410,8 @@ export function mergeQuery<T extends Options>(
 /**
  * Sets a single query parameter, replacing any existing value for that key.
  * Provides type-level tracking of parameter names and values.
+ * Non-string values are serialized via `String(value)` and tracked as
+ * their stringified literal (e.g., `1` tracks as `'1'`).
  *
  * @param o - The options object to modify
  * @param name - The parameter name
@@ -203,8 +423,8 @@ export function mergeQuery<T extends Options>(
  * // Set a single parameter - TypeScript tracks { page: '1' }
  * client.pipe(url, '/users').pipe(querySet, 'page', '1')
  *
- * // Chain multiple - TypeScript tracks { page: '1', limit: '10' }
- * client.pipe(querySet, 'page', '1').pipe(querySet, 'limit', '10')
+ * // Numbers and booleans are stringified - tracks { page: '1', active: 'true' }
+ * client.pipe(querySet, 'page', 1).pipe(querySet, 'active', true)
  *
  * // Replace existing value - TypeScript tracks { page: '2' }
  * client.pipe(querySet, 'page', '1').pipe(querySet, 'page', '2')
@@ -214,9 +434,13 @@ type InferQueryType<T> = T extends {
   searchParams?: TypedURLSearchParams<infer Q>;
 }
   ? Q
-  : {};
+  : QueryType;
 
-export function querySet<T extends Options, K extends string, V extends string>(
+export function querySet<
+  T extends Options,
+  K extends string,
+  V extends string | number | boolean
+>(
   o: T,
   name: K,
   value: V
@@ -224,7 +448,7 @@ export function querySet<T extends Options, K extends string, V extends string>(
   searchParams: TypedURLSearchParams<SetQueryType<InferQueryType<T>, K, V>>;
 } {
   const searchParams = new URLSearchParams(o.searchParams);
-  searchParams.set(name, value);
+  searchParams.set(name, String(value));
   return {
     ...o,
     searchParams,
@@ -234,6 +458,8 @@ export function querySet<T extends Options, K extends string, V extends string>(
 /**
  * Appends a single query parameter, allowing duplicate keys.
  * Provides type-level tracking - repeated keys become arrays.
+ * Non-string values are serialized via `String(value)` and tracked as
+ * their stringified literal (e.g., `2` tracks as `'2'`).
  *
  * Unlike `querySet`, this does not replace existing values for the same key.
  *
@@ -250,17 +476,17 @@ export function querySet<T extends Options, K extends string, V extends string>(
  * // Append duplicate keys - TypeScript tracks { tag: ['a', 'b'] }
  * client.pipe(queryAppend, 'tag', 'a').pipe(queryAppend, 'tag', 'b')
  *
- * // Mix with other params - TypeScript tracks { page: '1', tag: ['a', 'b'] }
+ * // Mix with other params - TypeScript tracks { page: '1', tag: ['a', '2'] }
  * client
  *   .pipe(querySet, 'page', '1')
  *   .pipe(queryAppend, 'tag', 'a')
- *   .pipe(queryAppend, 'tag', 'b')
+ *   .pipe(queryAppend, 'tag', 2)
  * ```
  */
 export function queryAppend<
   T extends Options,
   K extends string,
-  V extends string
+  V extends string | number | boolean
 >(
   o: T,
   name: K,
@@ -272,7 +498,7 @@ export function queryAppend<
     ...o,
     searchParams: new URLSearchParams([
       ...(o.searchParams || []),
-      [name, value],
+      [name, String(value)],
     ]),
   } as any;
 }
@@ -337,10 +563,37 @@ export function timeout<T extends Options>(
 }
 
 /**
+ * Input accepted by {@link headers}: a plain record, a `Headers` instance,
+ * or an array of `[name, value]` tuples. `Headers` instances and tuple
+ * arrays are normalized into a plain record for storage.
+ */
+export type HeadersInput =
+  | Record<string, string>
+  | Headers
+  | [string, string][];
+
+/**
+ * Normalizes a {@link HeadersInput} into the plain record form stored on
+ * the options object. Plain records pass through unchanged (preserving
+ * header-name casing and key order); `Headers` instances and tuple arrays
+ * are expanded via `Object.fromEntries`.
+ */
+function toHeadersRecord(h: HeadersInput): Record<string, string> {
+  if (h instanceof Headers || Array.isArray(h)) {
+    return Object.fromEntries(h);
+  }
+  return h;
+}
+
+/**
  * Sets all HTTP headers, replacing any existing headers.
  *
+ * Accepts a plain record, a `Headers` instance, or an array of
+ * `[name, value]` tuples. Non-record forms are normalized into a plain
+ * `Record<string, string>` before being stored.
+ *
  * @param o - The options object to modify
- * @param headers - The headers object
+ * @param headers - The headers (record, `Headers`, or tuple array)
  * @returns A new options object with the headers set
  *
  * @example
@@ -349,17 +602,21 @@ export function timeout<T extends Options>(
  *   'Content-Type': 'application/json',
  *   'Authorization': 'Bearer token'
  * })
+ *
+ * // Headers instance or tuple array are accepted too
+ * client.pipe(headers, new Headers({ 'Content-Type': 'application/json' }))
+ * client.pipe(headers, [['Content-Type', 'application/json']])
  * ```
  */
 export function headers<T extends Options, H extends Record<string, string>>(
   o: T,
-  headers: H
+  headers: H | Headers | [string, string][]
 ): Omit<T, 'headers'> & {
   headers: H;
 } {
   return {
     ...o,
-    headers,
+    headers: toHeadersRecord(headers) as H,
   };
 }
 
@@ -395,10 +652,18 @@ export function header<
 ): Omit<T, 'headers'> & {
   headers: H & Record<K, V>;
 } {
+  // Defensive: `headers()` normalizes `Headers` instances away, but a user
+  // may still set one directly on the options object. Spreading a `Headers`
+  // instance yields an empty object, so expand it first to avoid silently
+  // dropping the existing headers.
+  const base =
+    o.headers instanceof Headers
+      ? (Object.fromEntries(o.headers) as H)
+      : o.headers;
   return {
     ...o,
     headers: {
-      ...o.headers,
+      ...base,
       [name]: value,
     },
   };
@@ -462,18 +727,27 @@ export function contentType<T extends Options>(o: T, type: string) {
 }
 
 /**
- * Sets the request body as a string.
+ * Sets the request body.
+ *
+ * Accepts any `BodyInit` value (string, `FormData`, `Blob`,
+ * `URLSearchParams`, `ArrayBuffer`, streams, ...) or `null`, matching the
+ * native `fetch` `RequestInit.body` contract. Use {@link jsonBody} to
+ * serialize a value as JSON and set the Content-Type header.
  *
  * @param o - The options object to modify
- * @param data - The body content as a string
+ * @param data - The body content
  * @returns A new options object with the body set
  *
  * @example
  * ```ts
  * client.pipe(body, 'raw text content')
+ *
+ * // Non-string bodies pass through as-is
+ * client.pipe(body, new FormData())
+ * client.pipe(body, new Blob(['binary']))
  * ```
  */
-export function body<T extends Options>(o: T, data: string) {
+export function body<T extends Options>(o: T, data: BodyInit | null) {
   return {
     ...o,
     body: data,

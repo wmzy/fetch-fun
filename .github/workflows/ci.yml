@@ -12,6 +12,46 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [20, 22, 24]
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up pnpm
+      uses: pnpm/action-setup@v4
+      with:
+        version: 9
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ matrix.node-version }}
+        cache: 'pnpm'
+
+    - name: Install dependencies
+      run: pnpm install
+
+    - name: Run tests
+      run: npm test
+
+    - name: Collect coverage
+      if: matrix.node-version == 22
+      run: npm run coverage
+
+    - name: Upload coverage to Coveralls
+      if: matrix.node-version == 22
+      uses: coverallsapp/github-action@v2
+      with:
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        path-to-lcov: ./coverage/lcov.info
+
+  lint:
+    runs-on: ubuntu-latest
+
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
@@ -30,14 +70,35 @@ jobs:
     - name: Install dependencies
       run: pnpm install
 
-    - name: Run tests
-      run: npm test
+    - name: Run lint
+      run: npm run lint
 
-    - name: Collect coverage
-      run: npm run coverage
+  package-checks:
+    runs-on: ubuntu-latest
 
-    - name: Upload coverage to Coveralls
-      uses: coverallsapp/github-action@v2
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up pnpm
+      uses: pnpm/action-setup@v4
       with:
-        github-token: ${{ secrets.GITHUB_TOKEN }}
-        path-to-lcov: ./coverage/lcov.info
+        version: 9
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '22'
+        cache: 'pnpm'
+
+    - name: Install dependencies
+      run: pnpm install
+
+    - name: Build
+      run: npm run build
+
+    - name: Check package with publint
+      run: npm run lint:pkg
+
+    - name: Check package types with are-the-types-wrong
+      run: npm run attw

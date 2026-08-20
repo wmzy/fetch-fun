@@ -47,6 +47,49 @@ export class HTTPError extends Error {
 }
 
 /**
+ * Error thrown when the underlying fetch fails at the network level
+ * (DNS lookup failure, connection refused, TLS error, offline, ...).
+ *
+ * Native fetch signals these failures by rejecting with a `TypeError`;
+ * fetch-fun wraps that rejection in a {@link NetworkError} at the
+ * innermost layer — directly around the base fetch — so consumers get a
+ * typed error to branch on while the original `TypeError` is preserved as
+ * `cause`. Errors thrown by user middleware are never mislabeled this
+ * way, and aborts (`AbortError`) as well as timeouts ({@link TimeoutError})
+ * propagate untouched.
+ *
+ * The {@link url} is extracted on a best-effort basis from the request
+ * arguments and may be `undefined`.
+ *
+ * @example
+ * ```ts
+ * try {
+ *   await client.pipe(url, 'https://api.example.com/users').pipe(fetchJSON);
+ * } catch (e) {
+ *   if (e instanceof NetworkError) {
+ *     console.log(e.url); // 'https://api.example.com/users' (best effort)
+ *     console.log(e.cause); // the original TypeError from fetch
+ *   }
+ * }
+ * ```
+ */
+export class NetworkError extends Error {
+  constructor(
+    /** Best-effort URL of the request that failed. */
+    public url?: string,
+    options?: { cause?: unknown; method?: string }
+  ) {
+    super(
+      url == null
+        ? 'network error'
+        : `${options?.method ?? 'GET'} ${url} failed: network error`,
+      options
+    );
+    this.name = 'NetworkError';
+  }
+}
+
+/**
  * Error thrown when a request exceeds its time budget.
  *
  * Reserved for the timeout middleware; exported now so consumers can

@@ -12,7 +12,9 @@ import {
   checkError,
   mapResponse,
   retry,
+  signal,
   HTTPError,
+  NetworkError,
   TimeoutError,
   ValidationError,
 } from '@/index';
@@ -132,6 +134,32 @@ describe('Error Handling Integration Tests', () => {
       ]);
     });
 
+    it('should not wrap a TypeError thrown by user middleware as NetworkError', async () => {
+      // Only TypeErrors from the base fetch itself may become NetworkError;
+      // a TypeError escaping user middleware keeps its original identity.
+      const thrown = new TypeError('middleware type error');
+      const errorMiddleware: MiddlewareFn = () => async () => {
+        throw thrown;
+      };
+
+      const mockFetch = vi.fn();
+
+      const client = create({ fetch: mockFetch })
+        .pipe(use, errorMiddleware);
+
+      let err: unknown;
+      try {
+        await client.pipe(url, 'https://example.com').pipe(fetch);
+        expect.unreachable('fetch should have rejected');
+      } catch (e) {
+        err = e;
+      }
+
+      expect(err).toBe(thrown);
+      expect(err).not.toBeInstanceOf(NetworkError);
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
     it('should execute all enter phases before any error propagates', async () => {
       const order: string[] = [];
 
@@ -191,6 +219,29 @@ describe('Error Handling Integration Tests', () => {
       ).rejects.toThrow('Request failed');
 
       expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('should retry NetworkError and surface it after exhausting attempts', async () => {
+      const original = new TypeError('fetch failed');
+      const mockFetch = vi.fn().mockRejectedValue(original);
+
+      const client = create({ fetch: mockFetch }).pipe(retry, 2, {
+        delay: { initial: 1, max: 1, multiplier: 1 },
+      });
+
+      let err: unknown;
+      try {
+        await client.pipe(url, 'https://example.com/flaky').pipe(fetch);
+        expect.unreachable('fetch should have rejected');
+      } catch (e) {
+        err = e;
+      }
+
+      expect(err).toBeInstanceOf(NetworkError);
+      expect((err as NetworkError).cause).toBe(original);
+      expect((err as NetworkError).url).toBe('https://example.com/flaky');
+      // Network failures are transient by default: initial attempt + 2 retries.
+      expect(mockFetch).toHaveBeenCalledTimes(3);
     });
   });
 
@@ -352,6 +403,130 @@ describe('Error Handling Integration Tests', () => {
       ).rejects.toThrow('custom 404');
     });
 
+    it('should reject fetch() with NetworkError wrapping the original TypeError', async () => {
+      const original = new TypeError('fetch failed');
+      const mockFetch = vi.fn().mockRejectedValue(original);
+
+      const client = create({ fetch: mockFetch });
+
+      let err: unknown;
+      try {
+        await client.pipe(url, 'https://example.com/down').pipe(fetch);
+        expect.unreachable('fetch should have rejected');
+      } catch (e) {
+        err = e;
+      }
+
+      expect(err).toBeInstanceOf(NetworkError);
+      expect(err).toBeInstanceOf(Error);
+      expect((err as NetworkError).name).toBe('NetworkError');
+      expect((err as NetworkError).url).toBe('https://example.com/down');
+      expect((err as NetworkError).cause).toBe(original);
+      expect((err as NetworkError).message).toBe(
+        'GET https://example.com/down failed: network error'
+      );
+    });
+
+    it('should reject fetchJSON() with NetworkError on the same conditions', async () => {
+      const original = new TypeError('fetch failed');
+      const mockFetch = vi.fn().mockRejectedValue(original);
+
+      const client = create({ fetch: mockFetch });
+
+      let err: unknown;
+      try {
+        await client.pipe(url, 'https://example.com/users').pipe(fetchJSON);
+        expect.unreachable('fetchJSON should have rejected');
+      } catch (e) {
+        err = e;
+      }
+
+      expect(err).toBeInstanceOf(NetworkError);
+      expect((err as NetworkError).url).toBe('https://example.com/users');
+      expect((err as NetworkError).cause).toBe(original);
+    });
+
+    it('should let user aborts propagate as AbortError, not NetworkError', async () => {
+      const controller = new AbortController();
+      const mockFetch = vi
+        .fn()
+        .mockImplementation(
+          (_input: RequestInfo | URL, init?: RequestInit) =>
+            new Promise<Response>((_resolve, reject) => {
+              init?.signal?.addEventListener('abort', () => {
+                reject(
+                  new DOMException('This operation was aborted', 'AbortError')
+                );
+              });
+            })
+        );
+
+      const client = create({ fetch: mockFetch });
+
+      const pending = client
+        .pipe(url, 'https://example.com/slow')
+        .pipe(signal, controller.signal)
+        .pipe(fetch);
+
+      // Real timers: fire the abort while the request is in flight.
+      setTimeout(() => controller.abort(), 20);
+
+      let err: unknown;
+      try {
+        await pending;
+        expect.unreachable('fetch should have rejected');
+      } catch (e) {
+        err = e;
+      }
+
+      expect(err).toBeInstanceOf(DOMException);
+      expect((err as DOMException).name).toBe('AbortError');
+      expect(err).not.toBeInstanceOf(NetworkError);
+    });
+
+    it('should not wrap a TypeError when the request signal already aborted', async () => {
+      // Some runtimes reject with a TypeError around an abort; an aborted
+      // signal must keep the rejection untouched instead of mislabeling it.
+      const controller = new AbortController();
+      controller.abort();
+      const thrown = new TypeError('terminated');
+      const mockFetch = vi.fn().mockRejectedValue(thrown);
+
+      const client = create({ fetch: mockFetch });
+
+      let err: unknown;
+      try {
+        await client
+          .pipe(url, 'https://example.com/gone')
+          .pipe(signal, controller.signal)
+          .pipe(fetch);
+        expect.unreachable('fetch should have rejected');
+      } catch (e) {
+        err = e;
+      }
+
+      expect(err).toBe(thrown);
+      expect(err).not.toBeInstanceOf(NetworkError);
+    });
+
+    it('should let non-TypeError fetch failures propagate unchanged', async () => {
+      const thrown = new Error('unexpected implementation error');
+      const mockFetch = vi.fn().mockRejectedValue(thrown);
+
+      const client = create({ fetch: mockFetch });
+
+      let err: unknown;
+      try {
+        await client.pipe(url, 'https://example.com/weird').pipe(fetch);
+        expect.unreachable('fetch should have rejected');
+      } catch (e) {
+        err = e;
+      }
+
+      expect(err).toBe(thrown);
+      expect(err).not.toBeInstanceOf(NetworkError);
+    });
+
     it('should export HTTPError and TimeoutError from the library entry', () => {
       const httpErr = new HTTPError(
         new Response(null, { status: 404, statusText: 'Not Found' }),
@@ -371,6 +546,20 @@ describe('Error Handling Integration Tests', () => {
       expect(terse.message).toBe(
         'GET https://example.com/y failed with status 500'
       );
+
+      const networkErr = new NetworkError('https://api.example.com/x', {
+        method: 'POST',
+        cause: new TypeError('fetch failed'),
+      });
+      expect(networkErr.name).toBe('NetworkError');
+      expect(networkErr.message).toBe(
+        'POST https://api.example.com/x failed: network error'
+      );
+      expect(networkErr.cause).toBeInstanceOf(TypeError);
+
+      const bare = new NetworkError();
+      expect(bare.message).toBe('network error');
+      expect(bare.url).toBeUndefined();
 
       const timeoutErr = new TimeoutError();
       expect(timeoutErr.name).toBe('TimeoutError');

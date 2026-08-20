@@ -236,8 +236,16 @@ export function backoffDelay(
  * format, or is an HTTP-date in the past (a non-positive wait is
  * meaningless — the caller should fall back to its backoff strategy).
  *
+ * An optional `maxMs` caps the wait: a parsed delay larger than `maxMs` is
+ * clamped down to it — the caller still waits (and retries), just no longer
+ * than allowed — rather than skipping the retry entirely. Omitting `maxMs`
+ * leaves the parsed value untouched.
+ *
  * @param header - The raw header value, or `null` when the header is absent
- * @returns The delay in milliseconds, or `undefined` when unparseable
+ * @param maxMs - Optional upper bound for the returned delay in milliseconds;
+ *   larger parsed values are capped to it
+ * @returns The delay in milliseconds (capped at `maxMs` when provided), or
+ *   `undefined` when unparseable
  *
  * @example
  * ```ts
@@ -245,25 +253,37 @@ export function backoffDelay(
  * parseRetryAfter(new Date(Date.now() + 5000).toUTCString()); // ~5000
  * parseRetryAfter('soon');                                // undefined
  * parseRetryAfter('Wed, 21 Oct 2015 07:28:00 GMT');       // undefined (past)
+ *
+ * // Capping a hostile server's 2-minute demand at 30 seconds
+ * parseRetryAfter('120', 30000);                          // 30000
+ * parseRetryAfter('2', 30000);                            // 2000 (under cap)
+ * parseRetryAfter(new Date(Date.now() + 60000).toUTCString(), 5000); // 5000
  * ```
  */
-export function parseRetryAfter(header: string | null): number | undefined {
+export function parseRetryAfter(
+  header: string | null,
+  maxMs?: number
+): number | undefined {
   if (header == null) return undefined;
   const value = header.trim();
   if (value === '') return undefined;
+
+  let ms: number;
 
   // Integer-seconds form. Values outside the `\d+` grammar (fractional,
   // negative, units, ...) fall through to the date parse, which rejects
   // them cleanly.
   if (/^\d+$/.test(value)) {
-    return Number(value) * 1000;
+    ms = Number(value) * 1000;
+  } else {
+    // HTTP-date form
+    const until = Date.parse(value);
+    if (Number.isNaN(until)) return undefined;
+    ms = until - Date.now();
   }
 
-  // HTTP-date form
-  const until = Date.parse(value);
-  if (Number.isNaN(until)) return undefined;
-  const ms = until - Date.now();
-  return ms >= 0 ? ms : undefined;
+  if (ms < 0) return undefined; // HTTP-date in the past
+  return maxMs == null ? ms : Math.min(ms, maxMs);
 }
 
 /**

@@ -147,22 +147,23 @@ export type QueryType = Record<string, string | string[]>;
  * Handles the case where a key already exists (converts to array).
  * Uses Prettify to ensure the result is expanded for IDE hints.
  * Handles empty objects specially to avoid index signature pollution.
+ * Non-string values are tracked as their stringified form (`${V}`).
  */
 export type AppendQueryType<
   Q,
   K extends string,
-  V extends string
+  V extends string | number | boolean
 > = IsEmptyOrIndexed<Q> extends true
-  ? { [P in K]: V }
+  ? Record<K, `${V}`>
   : Prettify<{
       [P in keyof Q | K]: P extends K
         ? P extends keyof Q
           ? Q[P] extends string[]
-            ? [...Q[P], V]
+            ? [...Q[P], `${V}`]
             : Q[P] extends string
-            ? [Q[P], V]
-            : V
-          : V
+            ? [Q[P], `${V}`]
+            : `${V}`
+          : `${V}`
         : P extends keyof Q
         ? Q[P]
         : never;
@@ -187,14 +188,15 @@ type IsEmptyOrIndexed<T> = string extends keyof T
  * Helper type to set a value in a query type (replaces existing).
  * Uses Prettify to ensure the result is expanded for IDE hints.
  * Handles empty objects specially to avoid index signature pollution.
+ * Non-string values are tracked as their stringified form (`${V}`).
  */
 export type SetQueryType<
   Q,
   K extends string,
-  V extends string
+  V extends string | number | boolean
 > = IsEmptyOrIndexed<Q> extends true
-  ? { [P in K]: V }
-  : Prettify<Omit<Q, K> & Record<K, V>>;
+  ? Record<K, `${V}`>
+  : Prettify<Omit<Q, K> & Record<K, `${V}`>>;
 
 /**
  * URLSearchParams with type information for IDE hints.
@@ -313,7 +315,7 @@ export type Fetchable<Q extends QueryType = QueryType> = {
  *
  * @see {@link https://standardschema.dev | Standard Schema specification}
  */
-export interface StandardSchemaResult<Output = unknown> {
+export type StandardSchemaResult<Output = unknown> = {
   /** The validated output value (may be transformed/defaulted by the schema). */
   value?: Output;
   /** Validation issues; present and non-empty when validation failed. */
@@ -330,7 +332,7 @@ export interface StandardSchemaResult<Output = unknown> {
  *
  * @see {@link https://standardschema.dev | Standard Schema specification}
  */
-export interface StandardSchema<Output = unknown> {
+export type StandardSchema<Output = unknown> = {
   '~standard': {
     version: 1;
     vendor?: string;

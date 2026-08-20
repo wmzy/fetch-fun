@@ -1,15 +1,20 @@
 {
   "name": "fetch-fun",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Functional fetch toolkit: pipeable config functions over a plain options object, typed data flow, Standard Schema validation, smart retry and per-attempt timeout. Zero dependencies.",
-  "main": "dist/index.cjs.js",
-  "module": "dist/index.es.js",
+  "main": "dist/index.cjs",
+  "module": "dist/index.mjs",
   "types": "dist/types/index.d.ts",
   "exports": {
     ".": {
-      "types": "./dist/types/index.d.ts",
-      "import": "./dist/index.es.js",
-      "require": "./dist/index.cjs.js"
+      "import": {
+        "types": "./dist/types/index.d.mts",
+        "default": "./dist/index.mjs"
+      },
+      "require": {
+        "types": "./dist/types/index.d.ts",
+        "default": "./dist/index.cjs"
+      }
     }
   },
   "sideEffects": false,
@@ -19,11 +24,13 @@
   "scripts": {
     "commit": "lint-staged && git-cz -n",
     "build": "vite build && npm run build:types",
-    "build:types": "tsc -p tsconfig.build.json",
+    "build:types": "tsc -p tsconfig.build.json && node scripts/gen-dmts.mjs",
     "dev": "vite",
     "preview": "vite preview",
     "coverage": "vitest run --coverage --coverage.reporter=lcov",
     "lint": "eslint --fix src test",
+    "lint:pkg": "publint --strict",
+    "attw": "attw --pack .",
     "test": "vitest",
     "start": "vitest watch"
   },
@@ -70,6 +77,7 @@
     }
   },
   "devDependencies": {
+    "@arethetypeswrong/cli": "^0.18.5",
     "@vitest/coverage-v8": "^4.0.18",
     "commitizen": "^4.3.1",
     "cross-env": "^10.1.0",
@@ -77,8 +85,10 @@
     "eslint": "^10.0.3",
     "husky": "^9.1.7",
     "lint-staged": "^16.3.2",
+    "publint": "^0.3.24",
     "tools-config": "^0.2.3",
     "typescript": "^5.9.3",
+    "typescript-eslint": "^8.56.1",
     "vite": "^7.3.1",
     "vitest": "^4.0.18"
   }

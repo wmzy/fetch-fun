@@ -57,7 +57,7 @@ export function createRetryBase(beforeRetry: FetchBeforeRetry): MiddlewareFn {
 /**
  * Configuration for the retry policy of {@link createRetry}.
  */
-export interface RetryOptions {
+export type RetryOptions = {
   /**
    * Response statuses worth retrying. Other statuses resolve normally
    * (and surface as `HTTPError` from `fetchData`).
@@ -79,6 +79,31 @@ export interface RetryOptions {
    * @default true
    */
   respectRetryAfter?: boolean;
+  /**
+   * Upper bound (in milliseconds) for delays honored from a `Retry-After`
+   * header. A server demanding a longer pause is clamped down to this
+   * value — the retry still happens, just sooner than requested. Only
+   * relevant when `respectRetryAfter` is true.
+   * @default 30000
+   */
+  maxRetryAfter?: number;
+  /**
+   * Custom retry predicate that fully replaces the built-in decision of
+   * *which* attempts are worth retrying (status-set membership for
+   * resolved responses, error classification for rejections). Receives the
+   * 0-indexed attempt number and either the resolved `response` or the
+   * thrown `error`; return `true` (or a promise of it) to retry, `false`
+   * to surface the response/error as-is.
+   *
+   * Hard rules still apply regardless of the predicate's answer:
+   * `asNotRetryError`-wrapped and `ValidationError` rejections are
+   * rethrown, requests whose method is not retryable never retry, and
+   * attempts stop once `maxRetries` is reached.
+   */
+  shouldRetry?: (
+    attempt: number,
+    result: { response?: Response; error?: unknown }
+  ) => boolean | Promise<boolean>;
   /**
    * Exponential backoff tuning (passed to `backoffDelay`).
    * @default { initial: 1000, max: 10000, multiplier: 2 }
@@ -116,8 +141,10 @@ const DEFAULT_RETRY_METHODS: readonly string[] = [
  * whose method is (by default) idempotent are retried, and only for
  * transient-looking failures:
  *
- * - Rejected attempts: network errors (`TypeError`), library
- *   `TimeoutError`, and unknown errors are retried; `HTTPError` (thrown by
+ * - Rejected attempts: network failures (surfaced as `NetworkError` by the
+ *   built-in innermost wrapper, with the original `TypeError` preserved as
+ *   `cause`), library `TimeoutError`, and unknown errors are retried;
+ *   `HTTPError` (thrown by
  *   a user `checkError` middleware) is retried only when its status is in
  *   `statuses`; `ValidationError` and errors wrapped with
  *   `asNotRetryError()` are never retried (rethrowing the wrapped `cause`).
@@ -125,12 +152,21 @@ const DEFAULT_RETRY_METHODS: readonly string[] = [
  *   `statuses` — a 404 resolves as-is instead of burning retries (and is
  *   turned into an `HTTPError` by `fetchData` outside the middleware chain).
  *
+ * When `opts.shouldRetry` is provided it **replaces** both of those
+ * status/error decisions: the predicate receives the 0-indexed attempt
+ * number plus either the resolved `response` or the thrown `error`, and
+ * its (possibly async) answer decides whether to retry. Hard rules always
+ * win over the predicate: `asNotRetryError`-wrapped and `ValidationError`
+ * rejections are rethrown, requests whose method is not in `methods`
+ * never retry, and attempts stop once `maxRetries` is reached.
+ *
  * Waits between attempts use exponential backoff with jitter
  * (`delay.initial` → `delay.max`, ×`delay.multiplier` per attempt), unless
  * the discarded response provides a parseable, non-past `Retry-After`
- * header and `respectRetryAfter` is true — then that value wins. The
- * discarded response's body is cancelled before retrying to avoid leaks.
- * Waits are interrupted by the client's `signal` (see `sleep`).
+ * header and `respectRetryAfter` is true — then that value wins, capped
+ * at `maxRetryAfter` (default 30s). The discarded response's body is
+ * cancelled before retrying to avoid leaks. Waits are interrupted by the
+ * client's `signal` (see `sleep`).
  *
  * @param maxRetries - Maximum number of retry attempts (the initial attempt
  * is not counted)
@@ -160,6 +196,8 @@ export function createRetry(
     (opts?.methods ?? DEFAULT_RETRY_METHODS).map((m) => m.toUpperCase())
   );
   const respectRetryAfter = opts?.respectRetryAfter ?? true;
+  const maxRetryAfter = opts?.maxRetryAfter ?? 30000;
+  const shouldRetry = opts?.shouldRetry;
   const { initial = 1000, max = 10000, multiplier = 2 } = opts?.delay ?? {};
 
   return (f, o) =>
@@ -178,14 +216,22 @@ export function createRetry(
           // A schema validation failure is deterministic — retrying
           // cannot fix it.
           if (e instanceof ValidationError) throw e;
-          // HTTPError from a user checkError middleware: retry only when
-          // its status is in the retryable set. Everything else (network
-          // TypeError, library TimeoutError, unknown errors) is treated
-          // as transient.
-          if (e instanceof HTTPError && !statuses.has(e.response.status)) {
+          // Hard gates: a non-retryable method or an exhausted budget is
+          // never overridden, not even by a custom shouldRetry predicate.
+          if (!canRetryMethod || attempt >= maxRetries) throw e;
+          if (shouldRetry) {
+            // Custom predicate replaces the error classification below.
+            if (!(await shouldRetry(attempt, { error: e }))) throw e;
+          } else if (
+            e instanceof HTTPError &&
+            !statuses.has(e.response.status)
+          ) {
+            // HTTPError from a user checkError middleware: retry only when
+            // its status is in the retryable set. Everything else (network
+            // `NetworkError`, library TimeoutError, unknown errors) is
+            // treated as transient.
             throw e;
           }
-          if (!canRetryMethod || attempt >= maxRetries) throw e;
 
           // No response to consult for Retry-After on the rejection path.
           await sleep(
@@ -199,18 +245,25 @@ export function createRetry(
         // Resolved attempt: retry transient statuses on retryable methods;
         // return everything else as-is (4xx stays a Response here —
         // fetchData raises HTTPError outside the middleware chain).
-        if (canRetryMethod && attempt < maxRetries && statuses.has(res.status)) {
-          const retryAfterMs = respectRetryAfter
-            ? parseRetryAfter(res.headers.get('Retry-After'))
-            : undefined;
-          // Release the discarded response's body to avoid leaking it.
-          res.body?.cancel().catch(() => {});
-          await sleep(
-            retryAfterMs ?? backoffDelay(attempt, initial, max, multiplier),
-            o.signal
-          );
-          attempt += 1;
-          continue;
+        if (canRetryMethod && attempt < maxRetries) {
+          // A custom predicate replaces the status-set decision, but only
+          // after the method/count hard gates above have passed.
+          const worthRetrying = shouldRetry
+            ? await shouldRetry(attempt, { response: res })
+            : statuses.has(res.status);
+          if (worthRetrying) {
+            const retryAfterMs = respectRetryAfter
+              ? parseRetryAfter(res.headers.get('Retry-After'), maxRetryAfter)
+              : undefined;
+            // Release the discarded response's body to avoid leaking it.
+            res.body?.cancel().catch(() => undefined);
+            await sleep(
+              retryAfterMs ?? backoffDelay(attempt, initial, max, multiplier),
+              o.signal
+            );
+            attempt += 1;
+            continue;
+          }
         }
         return res;
       }
@@ -414,7 +467,7 @@ export function sortMiddlewares(entries: MiddlewareEntry[]): MiddlewareEntry[] {
       path.push(node);
       node = predecessors.get(node)!;
     }
-    const cycle = path.slice(indexOf.get(node)!);
+    const cycle = path.slice(indexOf.get(node));
     const trail = [...cycle, node].map(String).join(' -> ');
     throw new Error(`Middleware dependency cycle detected: ${trail}`);
   }
@@ -494,14 +547,15 @@ export function withAuth(token: string) {
   return {
     name: 'builtin:auth' as const,
     inner: 'builtin:retry' as const,
-    middleware: ((f) => (input, init) =>
-      f(input, {
-        ...init,
-        headers: {
-          ...((init?.headers as Record<string, string>) || {}),
-          Authorization: `Bearer ${token}`,
-        },
-      })) as MiddlewareFn,
+    middleware: ((f) => (input, init) => {
+      // `new Headers(...)` interops with every HeadersInit shape; the
+      // previous plain-object spread silently dropped headers already
+      // packed into a Headers instance. Native fetch accepts the
+      // instance directly.
+      const headers = new Headers(init?.headers);
+      headers.set('Authorization', `Bearer ${token}`);
+      return f(input, { ...init, headers });
+    }) as MiddlewareFn,
   };
 }
 
@@ -547,6 +601,158 @@ export function withLogging(
           logger('Error:', { url: o.url, error, duration: Date.now() - start });
           throw error;
         }
+      }) as MiddlewareFn,
+  };
+}
+
+/**
+ * Progress snapshot handed to {@link withProgress} callbacks.
+ */
+export type ProgressState = {
+  /** Fraction of the body transferred, in `[0, 1]`. Always `0` while the
+   * total size is unknown (no `Content-Length` header, or a stream body
+   * without a known length). */
+  percent: number;
+  /** Bytes transferred so far (this attempt's body). */
+  transferred: number;
+  /** Total bytes, from `Content-Length` for downloads. `0` when unknown —
+   * likewise for uploads, since a streaming request body carries no size. */
+  total: number;
+}
+
+/**
+ * Options for {@link withProgress}.
+ */
+export type ProgressOptions = {
+  /**
+   * Called for every downloaded chunk, right before it is forwarded to the
+   * consumer. `total` comes from the response's `Content-Length` (parsed as
+   * a non-negative integer; anything missing or malformed counts as
+   * unknown and reports `total: 0` with `percent: 0`). Null-body responses
+   * (`204`/`205`/`HEAD`, …) never reach this callback.
+   */
+  onDownloadProgress?: (progress: ProgressState, chunk: Uint8Array) => void;
+  /**
+   * Called for every chunk read from the request body.
+   *
+   * Only a `ReadableStream` request body can be observed: every other body
+   * shape (string, BufferSource, Blob, URLSearchParams, FormData) is passed
+   * through untouched and never triggers this callback — the library does
+   * not serialize request bodies just to count them. Note that native
+   * `fetch` requires `duplex: 'half'` for stream bodies, which callers
+   * must set themselves. Like downloads, `total` is `0` (and `percent`
+   * stays `0`) because a stream's length is not known up front.
+   */
+  onUploadProgress?: (progress: ProgressState, chunk: Uint8Array) => void;
+}
+
+/**
+ * Wraps `body` in a counting stream, reporting each chunk via `onProgress`
+ * with the known `total` (from `contentLength`) folded into `percent`.
+ */
+function trackStream(
+  body: ReadableStream<Uint8Array>,
+  contentLength: number,
+  onProgress: (progress: ProgressState, chunk: Uint8Array) => void
+): ReadableStream<Uint8Array> {
+  let transferred = 0;
+  return body.pipeThrough(
+    new TransformStream<Uint8Array, Uint8Array>({
+      transform(chunk, controller) {
+        transferred += chunk.byteLength;
+        onProgress(
+          {
+            percent:
+              contentLength > 0
+                ? Math.min(transferred / contentLength, 1)
+                : 0,
+            transferred,
+            total: contentLength,
+          },
+          chunk
+        );
+        controller.enqueue(chunk);
+      },
+    })
+  );
+}
+
+/**
+ * Creates a download/upload progress-reporting middleware configuration.
+ *
+ * Name: 'builtin:progress'
+ * Position: inner of NORMAL — progress sits inside the NORMAL group and
+ * therefore inside retry: every (re)try reports its own progress from
+ * zero, and counters restart when a discarded attempt is retried.
+ *
+ * Downloads are observed by piping `response.body` through a counting
+ * `TransformStream` and rebuilding the response with its original
+ * `status`/`statusText`/`headers` — the returned `Response` behaves like
+ * the original (its `body` is a new stream, so it can only be read once,
+ * exactly like the original). Null-body responses (`204`/`205`/`HEAD`, …,
+ * anything with `body == null`) are returned untouched and produce no
+ * callbacks. `total` comes from `Content-Length`; without it `total` is
+ * `0` and `percent` stays `0` while `transferred` still counts bytes.
+ *
+ * Uploads are counted only when the request `init.body` is already a
+ * `ReadableStream` (see {@link ProgressOptions.onUploadProgress}).
+ *
+ * Callbacks fire while the body streams — i.e. after the fetch call has
+ * resolved — so they must not throw for a request to succeed.
+ *
+ * @param opts - Progress callbacks
+ * @returns A middleware configuration with proper naming and positioning
+ *
+ * @example
+ * ```ts
+ * client.pipe(use, withProgress({
+ *   onDownloadProgress: ({ percent, transferred, total }) =>
+ *     console.log(`download ${(percent * 100).toFixed(1)}%`, transferred, total),
+ *   onUploadProgress: ({ transferred }) => console.log('sent', transferred),
+ * }))
+ * ```
+ */
+export function withProgress(opts: ProgressOptions = {}) {
+  return {
+    name: 'builtin:progress' as const,
+    // `as typeof NORMAL` keeps the unique-symbol type; the bare literal
+    // would widen to `symbol`, which is not a valid MiddlewareName.
+    inner: NORMAL as typeof NORMAL,
+    middleware: ((f, _o) =>
+      async (input, init) => {
+        let nextInit = init;
+        if (opts.onUploadProgress && init?.body instanceof ReadableStream) {
+          // A wrapped body keeps streaming: no Content-Length claim, no
+          // serialization — total stays unknown (0), percent stays 0.
+          nextInit = {
+            ...init,
+            body: trackStream(init.body, 0, opts.onUploadProgress),
+          };
+        }
+
+        const res = await f(input, nextInit);
+
+        if (!opts.onDownloadProgress || res.body == null) {
+          // Null-body responses (204/205/HEAD, …) must stay null-body —
+          // wrapping would fabricate an empty stream and change semantics.
+          return res;
+        }
+
+        const contentLength = Number(res.headers.get('Content-Length'));
+        return new Response(
+          trackStream(
+            res.body,
+            Number.isFinite(contentLength) && contentLength > 0
+              ? contentLength
+              : 0,
+            opts.onDownloadProgress
+          ),
+          {
+            status: res.status,
+            statusText: res.statusText,
+            headers: res.headers,
+          }
+        );
       }) as MiddlewareFn,
   };
 }

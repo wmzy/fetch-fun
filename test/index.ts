@@ -1,12 +1,9 @@
-import { describe, it, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, afterEach, vi, expect } from 'vitest';
 import * as ff from '@/index';
 
 const example = 'https://example.com';
 
 describe('fetch-fun', () => {
-  beforeEach(() => {
-  });
-
   afterEach(() => {
     vi.restoreAllMocks();
   });
@@ -15,7 +12,7 @@ describe('fetch-fun', () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true });
     const config = ff.create({ fetch: fetchMock, url: example });
     const res = await ff.fetch(config);
-    res.ok.should.be.true;
-    fetchMock.mock.lastCall![0].should.be.equal(example);
+    expect(res.ok).toBe(true);
+    expect(fetchMock.mock.lastCall![0]).toBe(example);
   });
 });

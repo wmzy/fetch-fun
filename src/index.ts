@@ -12,6 +12,7 @@ export {
   withTimeout,
   withAuth,
   withLogging,
+  withProgress,
 } from './middleware';
-export type { RetryOptions } from './middleware';
+export type { RetryOptions, ProgressOptions, ProgressState } from './middleware';
 export { createQuery, type TupleArrayToRecord } from './util';

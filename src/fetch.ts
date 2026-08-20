@@ -1,5 +1,5 @@
 import { json } from './config';
-import { HTTPError } from './errors';
+import { HTTPError, NetworkError } from './errors';
 import { sortMiddlewares } from './middleware';
 import type { Fetchable, Pipe, ReaderData, ResolveData } from './types';
 import { getData, hasData, applyTimeout } from './util';
@@ -78,6 +78,65 @@ export function toFetchParams(o: Fetchable): [string, RequestInit] {
 }
 
 /**
+ * Best-effort extraction of the request URL from fetch arguments, for
+ * {@link NetworkError} reporting: strings pass through, `URL` uses its
+ * normalized href, and `Request` exposes its target URL.
+ */
+function requestUrlOf(input: RequestInfo | URL): string | undefined {
+  if (typeof input === 'string') return input;
+  if (input instanceof URL) return input.href;
+  return input.url;
+}
+
+/**
+ * Best-effort extraction of the request method from fetch arguments:
+ * `init.method` wins when present, a `Request` input reports its own
+ * method, and everything else is `undefined` (rendered as `GET`).
+ */
+function requestMethodOf(
+  input: RequestInfo | URL,
+  init?: RequestInit
+): string | undefined {
+  if (typeof init?.method === 'string' && init.method !== '') {
+    return init.method;
+  }
+  return input instanceof Request ? input.method : undefined;
+}
+
+/**
+ * Wraps the base fetch function so network-level failures reject with a
+ * typed {@link NetworkError} instead of a bare `TypeError`.
+ *
+ * This wrapping sits at the innermost layer — directly around the base
+ * fetch — so only errors thrown by fetch itself are relabeled; a
+ * `TypeError` escaping user middleware propagates untouched. Aborts are
+ * excluded too: when the request's signal has fired, the rejection is
+ * rethrown unchanged (an `AbortError`, or whatever the runtime produced
+ * around the abort) instead of being mislabeled as a network failure.
+ *
+ * @param f - The base fetch function
+ * @returns A fetch function that rejects with NetworkError on transport
+ *   failures
+ */
+function applyNetworkError(
+  f: typeof globalThis.fetch
+): typeof globalThis.fetch {
+  return async (input, init) => {
+    try {
+      return await f(input, init);
+    } catch (e) {
+      if (e instanceof TypeError && !init?.signal?.aborted) {
+        throw new NetworkError(requestUrlOf(input), {
+          cause: e,
+          method: requestMethodOf(input, init),
+        });
+      }
+      throw e;
+    }
+  };
+}
+
+/**
  * Applies all middlewares to the fetch function.
  *
  * Middlewares are sorted based on their positioning constraints (outer/inner)
@@ -91,6 +150,11 @@ export function toFetchParams(o: Fetchable): [string, RequestInit] {
  * `signal` via `AbortSignal.any` (Node.js >= 20.3.0). Without a budget this
  * is a zero-overhead pass-through.
  *
+ * Independently of the budget, the base fetch itself is wrapped by
+ * {@link applyNetworkError} so network-level `TypeError` rejections surface
+ * as {@link NetworkError} — inside the middleware chain, so user middleware
+ * errors keep their original identity.
+ *
  * @param f - The base fetch function
  * @param o - The fetchable configuration containing middlewares
  * @returns The fetch function with all middlewares applied
@@ -98,8 +162,9 @@ export function toFetchParams(o: Fetchable): [string, RequestInit] {
 export function applyMiddlewares(f: typeof globalThis.fetch, o: Fetchable) {
   const entries = o.middlewares || [];
   const sorted = sortMiddlewares(entries);
+  const base = applyNetworkError(f);
   const innermost =
-    o.timeoutMs != null ? applyTimeout(f, o.timeoutMs) : f;
+    o.timeoutMs != null ? applyTimeout(base, o.timeoutMs) : base;
   // Apply from last to first so that the first middleware is the outermost
   return sorted.reduceRight((f, entry) => entry.middleware(f, o), innermost);
 }
@@ -110,10 +175,14 @@ export function applyMiddlewares(f: typeof globalThis.fetch, o: Fetchable) {
  * Applies all configured middlewares and makes the HTTP request.
  * This is the raw escape hatch: it never throws on non-2xx statuses —
  * the returned `Response` always resolves. Use `fetchData`/`fetchJSON`
- * for automatic `HTTPError` throwing instead.
+ * for automatic `HTTPError` throwing instead. Network-level failures
+ * (fetch rejecting with a `TypeError`, e.g. DNS or connection errors)
+ * surface as a {@link NetworkError} with the original error preserved
+ * as `cause`; aborts and timeouts keep their native/library identities.
  *
  * @param o - The fetchable configuration (must include url)
  * @returns A Promise resolving to the Response
+ * @throws {NetworkError} When fetch itself fails at the network level
  *
  * @example
  * ```ts
@@ -156,6 +225,8 @@ function bestEffortRequest(o: Fetchable): Request | undefined {
  * (`!response.ok`). If a data reader middleware already parsed the error
  * body, the parsed value is attached to `error.data`. To opt out and
  * handle statuses yourself, use `fetch()` and inspect the raw `Response`.
+ * Network-level failures (fetch rejecting with a `TypeError`) surface as
+ * a {@link NetworkError} with the original error preserved as `cause`.
  *
  * The return type is inferred from the reader attached earlier in the pipe
  * (e.g. `pipe(data, reader)`, `pipe(json)`, or converged by
@@ -167,6 +238,7 @@ function bestEffortRequest(o: Fetchable): Request | undefined {
  * @param o - The fetchable configuration with a data reader
  * @returns A Promise resolving to the parsed data
  * @throws {HTTPError} When the response status is not ok
+ * @throws {NetworkError} When fetch itself fails at the network level
  *
  * @example
  * ```ts
@@ -205,6 +277,7 @@ export async function fetchData<T = never, O extends Fetchable = Fetchable>(
  * @param o - The fetchable configuration
  * @returns A Promise resolving to the parsed JSON data
  * @throws {HTTPError} When the response status is not ok
+ * @throws {NetworkError} When fetch itself fails at the network level
  *
  * @example
  * ```ts

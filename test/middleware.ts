@@ -7,6 +7,7 @@ import {
   use,
   signal,
   method,
+  body,
   checkError,
   json,
   validate,
@@ -14,11 +15,11 @@ import {
   withTimeout,
   withAuth,
   withLogging,
+  withProgress,
   sortMiddlewares,
   normalizeMiddleware,
   NORMAL,
-} from '@/index';
-import { TimeoutError, HTTPError, ValidationError } from '@/index';
+ TimeoutError, HTTPError, ValidationError, NetworkError } from '@/index';
 import type { MiddlewareFn, MiddlewareEntry, StandardSchema } from '../src/types';
 import { asNotRetryError } from '@/util';
 
@@ -261,9 +262,10 @@ describe('Middleware Tests', () => {
       delay: { initial: 1 },
     });
 
+    // The base fetch's TypeError surfaces as a NetworkError (cause kept).
     await expect(
       client.pipe(url, 'https://example.com').pipe(fetch)
-    ).rejects.toThrow('fetch failed');
+    ).rejects.toThrow(NetworkError);
     expect(mockFetch).toHaveBeenCalledTimes(3); // exhausted all attempts
   });
 
@@ -275,7 +277,7 @@ describe('Middleware Tests', () => {
 
     await expect(
       client.pipe(url, 'https://example.com').pipe(fetch)
-    ).rejects.toThrow('fetch failed');
+    ).rejects.toThrow(NetworkError);
     expect(mockFetch).toHaveBeenCalledTimes(1); // immediate rethrow
   });
 
@@ -369,6 +371,186 @@ describe('Middleware Tests', () => {
 
     expect(res.status).toBe(201);
     expect(mockFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('should cap a long Retry-After at maxRetryAfter', async () => {
+    // Real timers: the wait must be measurable in real milliseconds.
+    vi.useRealTimers();
+    const mockFetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response('busy', {
+          status: 429,
+          headers: { 'Retry-After': '120' }, // demands 2 minutes
+        })
+      )
+      .mockResolvedValueOnce(new Response('ok'));
+    const client = create({ fetch: mockFetch }).pipe(retry, 2, {
+      maxRetryAfter: 50,
+    });
+
+    const start = Date.now();
+    const res = await client.pipe(url, 'https://example.com').pipe(fetch);
+    const elapsed = Date.now() - start;
+
+    expect(res.status).toBe(200);
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    expect(elapsed).toBeGreaterThanOrEqual(40); // waited the 50ms cap…
+    expect(elapsed).toBeLessThan(1000); // …not the 120s demand nor the 1s backoff
+  });
+
+  it('should let shouldRetry override the status set (retry a non-default status)', async () => {
+    const seen: { response?: Response; error?: unknown }[] = [];
+    const mockFetch = vi
+      .fn()
+      .mockResolvedValueOnce(new Response('teapot', { status: 418 }))
+      .mockResolvedValueOnce(new Response('ok'));
+    const client = create({ fetch: mockFetch }).pipe(retry, 2, {
+      shouldRetry: (_attempt, result) => {
+        seen.push(result);
+        return result.response?.status === 418; // custom retryable set
+      },
+      delay: { initial: 1 },
+    });
+
+    const res = await client.pipe(url, 'https://example.com').pipe(fetch);
+
+    expect(res.status).toBe(200);
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    // Consulted for every resolved attempt within the budget — including
+    // the successful 200, where it says "no" and the response is returned.
+    expect(seen.map((r) => r.response?.status)).toEqual([418, 200]);
+    expect(seen.every((r) => r.error === undefined)).toBe(true);
+  });
+
+  it('should let shouldRetry veto a default-retryable status', async () => {
+    const mockFetch = vi
+      .fn()
+      .mockResolvedValueOnce(new Response('err', { status: 503 }))
+      .mockResolvedValueOnce(new Response('ok')); // must never be reached
+    const client = create({ fetch: mockFetch }).pipe(retry, 2, {
+      shouldRetry: () => false,
+      delay: { initial: 1 },
+    });
+
+    const res = await client.pipe(url, 'https://example.com').pipe(fetch);
+
+    expect(res.status).toBe(503); // surfaced as-is instead of retried
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('should await an async shouldRetry predicate (a vetoing Promise must not retry)', async () => {
+    // An un-awaited predicate would yield a truthy Promise and retry
+    // anyway; only proper awaiting sees the resolved `false`.
+    const mockFetch = vi
+      .fn()
+      .mockResolvedValueOnce(new Response('err', { status: 503 }));
+    const client = create({ fetch: mockFetch }).pipe(retry, 2, {
+      shouldRetry: async () => false,
+      delay: { initial: 1 },
+    });
+
+    const res = await client.pipe(url, 'https://example.com').pipe(fetch);
+
+    expect(res.status).toBe(503);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('should pass 0-indexed attempts and result.error on the rejection path', async () => {
+    const seen: { attempt: number; error: unknown; response?: Response }[] =
+      [];
+    const first = new TypeError('fetch failed');
+    const mockFetch = vi
+      .fn()
+      .mockRejectedValueOnce(first)
+      .mockRejectedValueOnce(new TypeError('again'))
+      .mockResolvedValueOnce(new Response('ok'));
+    const client = create({ fetch: mockFetch }).pipe(retry, 3, {
+      shouldRetry: async (attempt, result) => {
+        seen.push({ attempt, error: result.error, response: result.response });
+        return result.error !== undefined; // retry failures only
+      },
+      delay: { initial: 1 },
+    });
+
+    const res = await client.pipe(url, 'https://example.com').pipe(fetch);
+
+    expect(res.status).toBe(200);
+    expect(mockFetch).toHaveBeenCalledTimes(3);
+    // Starts at 0 and increments; the final entry is the successful
+    // attempt, where the predicate sees a response and vetoes the retry.
+    expect(seen.map((s) => s.attempt)).toEqual([0, 1, 2]);
+    // result.error is the thrown value — the base fetch's TypeError,
+    // wrapped as a NetworkError with the original preserved as cause.
+    expect(seen[0]!.error).toBeInstanceOf(NetworkError);
+    expect((seen[0]!.error as NetworkError).cause).toBe(first);
+    expect(seen.slice(0, 2).every((s) => s.response === undefined)).toBe(true);
+    expect(seen[2]!.response?.status).toBe(200);
+  });
+
+  it('should enforce the method/count hard rules even when shouldRetry says yes', async () => {
+    // Non-idempotent method: never retried despite the predicate.
+    const postFetch = vi
+      .fn()
+      .mockResolvedValue(new Response('boom', { status: 500 }));
+    const postClient = create({ fetch: postFetch })
+      .pipe(retry, 3, { shouldRetry: () => true, delay: { initial: 1 } })
+      .pipe(method, 'POST');
+
+    const postRes = await postClient
+      .pipe(url, 'https://example.com')
+      .pipe(fetch);
+
+    expect(postRes.status).toBe(500);
+    expect(postFetch).toHaveBeenCalledTimes(1); // side-effect protection wins
+
+    // Count gate: the budget is exhausted even though the predicate
+    // keeps saying yes.
+    const getFetch = vi
+      .fn()
+      .mockResolvedValue(new Response('boom', { status: 500 }));
+    const getClient = create({ fetch: getFetch }).pipe(retry, 2, {
+      shouldRetry: () => true,
+      delay: { initial: 1 },
+    });
+
+    const getRes = await getClient.pipe(url, 'https://example.com').pipe(fetch);
+
+    expect(getRes.status).toBe(500);
+    expect(getFetch).toHaveBeenCalledTimes(3); // 1 initial + 2 retries, stop
+  });
+
+  it('should never retry asNotRetryError/ValidationError regardless of shouldRetry', async () => {
+    // asNotRetryError: unwrapped original rethrown immediately.
+    const original = new Error('permanent');
+    const wrappedFetch = vi
+      .fn()
+      .mockRejectedValueOnce(asNotRetryError(original))
+      .mockResolvedValueOnce(new Response('ok'));
+    const wrappedClient = create({ fetch: wrappedFetch }).pipe(retry, 3, {
+      shouldRetry: () => true,
+      delay: { initial: 1 },
+    });
+
+    await expect(
+      wrappedClient.pipe(url, 'https://example.com').pipe(fetch)
+    ).rejects.toThrow('permanent');
+    expect(wrappedFetch).toHaveBeenCalledTimes(1);
+
+    // ValidationError: deterministic failure, retried by nothing.
+    const validationFetch = vi
+      .fn()
+      .mockRejectedValueOnce(new ValidationError([{ message: 'nope' }]))
+      .mockResolvedValueOnce(new Response('ok'));
+    const validationClient = create({ fetch: validationFetch }).pipe(retry, 3, {
+      shouldRetry: () => true,
+      delay: { initial: 1 },
+    });
+
+    await expect(
+      validationClient.pipe(url, 'https://example.com').pipe(fetch)
+    ).rejects.toThrow(ValidationError);
+    expect(validationFetch).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -702,7 +884,7 @@ describe('Middleware Ordering', () => {
       const config = withTimeout(5000);
       const signals: AbortSignal[] = [];
       const mockFetch = vi.fn().mockImplementation((_, init) => {
-        signals.push(init!.signal!);
+        signals.push(init!.signal);
         return Promise.resolve(new Response('ok'));
       });
 
@@ -810,12 +992,10 @@ describe('Middleware Ordering', () => {
         headers: { 'X-Custom': 'value' },
       });
 
-      expect(
-        (capturedInit?.headers as Record<string, string>)?.Authorization
-      ).toBe('Bearer my-token');
-      expect(
-        (capturedInit?.headers as Record<string, string>)?.['X-Custom']
-      ).toBe('value');
+      // withAuth normalizes headers into a Headers instance.
+      const headers = new Headers(capturedInit?.headers);
+      expect(headers.get('Authorization')).toBe('Bearer my-token');
+      expect(headers.get('X-Custom')).toBe('value');
     });
 
     it('withAuth middleware should work without existing headers', async () => {
@@ -830,12 +1010,33 @@ describe('Middleware Ordering', () => {
       await wrappedFetch('https://example.com', undefined);
 
       expect(
-        (capturedInit?.headers as Record<string, string>)?.Authorization
+        new Headers(capturedInit?.headers).get('Authorization')
       ).toBe('Bearer my-token');
     });
 
+    it('withAuth middleware should preserve headers from a Headers instance', async () => {
+      // Regression: the old plain-object spread saw a Headers instance as
+      // `{}` and silently dropped every header it carried.
+      const config = withAuth('my-token');
+      let capturedInit: RequestInit | undefined;
+      const mockFetch = vi.fn().mockImplementation((_, init) => {
+        capturedInit = init;
+        return Promise.resolve(new Response('ok'));
+      });
+
+      const wrappedFetch = config.middleware(mockFetch as any, {} as any);
+      await wrappedFetch('https://example.com', {
+        headers: new Headers({ 'X-Custom': 'value', Accept: 'text/plain' }),
+      });
+
+      const headers = new Headers(capturedInit?.headers);
+      expect(headers.get('Authorization')).toBe('Bearer my-token');
+      expect(headers.get('X-Custom')).toBe('value');
+      expect(headers.get('Accept')).toBe('text/plain');
+    });
+
     it('withLogging middleware should log request and response', async () => {
-      const logs: Array<{ msg: string; data?: unknown }> = [];
+      const logs: { msg: string; data?: unknown }[] = [];
       const logger = (msg: string, data?: unknown) => logs.push({ msg, data });
       const config = withLogging(logger);
 
@@ -854,7 +1055,7 @@ describe('Middleware Ordering', () => {
     });
 
     it('withLogging middleware should log errors', async () => {
-      const logs: Array<{ msg: string; data?: unknown }> = [];
+      const logs: { msg: string; data?: unknown }[] = [];
       const logger = (msg: string, data?: unknown) => logs.push({ msg, data });
       const config = withLogging(logger);
 
@@ -874,13 +1075,210 @@ describe('Middleware Ordering', () => {
     });
   });
 
+  describe('withProgress', () => {
+    it('withProgress should create config with inner NORMAL constraint', () => {
+      const config = withProgress({});
+      expect(config.name).toBe('builtin:progress');
+      expect(config.inner).toBe(NORMAL);
+    });
+
+    it('withProgress middleware should report download progress per chunk', async () => {
+      const enc = new TextEncoder();
+      const bodyStream = new ReadableStream<Uint8Array>({
+        start(c) {
+          c.enqueue(enc.encode('Hello'));
+          c.enqueue(enc.encode('World'));
+          c.close();
+        },
+      });
+      const mockFetch = vi
+        .fn()
+        .mockResolvedValue(
+          new Response(bodyStream, { headers: { 'Content-Length': '10' } })
+        );
+      const events: {
+        percent: number;
+        transferred: number;
+        total: number;
+      }[] = [];
+      const chunks: Uint8Array[] = [];
+      const config = withProgress({
+        onDownloadProgress: (p, chunk) => {
+          events.push({ ...p });
+          chunks.push(chunk);
+        },
+      });
+
+      const wrappedFetch = config.middleware(
+        mockFetch as any,
+        { url: '/test', method: 'GET' } as any
+      );
+      const res = await wrappedFetch('https://example.com');
+      const text = await res.text();
+
+      expect(text).toBe('HelloWorld');
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      expect(events.map((e) => e.transferred)).toEqual([5, 10]);
+      expect(events.map((e) => e.total)).toEqual([10, 10]);
+      expect(events.map((e) => e.percent)).toEqual([0.5, 1]);
+
+      // The chunks handed to the callback concatenate back to the body.
+      const merged = chunks.reduce<Uint8Array>((acc, c) => {
+        const out = new Uint8Array(acc.byteLength + c.byteLength);
+        out.set(acc);
+        out.set(c, acc.byteLength);
+        return out;
+      }, new Uint8Array(0));
+      expect(new TextDecoder().decode(merged)).toBe('HelloWorld');
+    });
+
+    it('withProgress should keep percent 0 but still count bytes without Content-Length', async () => {
+      const enc = new TextEncoder();
+      const bodyStream = new ReadableStream<Uint8Array>({
+        start(c) {
+          c.enqueue(enc.encode('abc'));
+          c.enqueue(enc.encode('de'));
+          c.close();
+        },
+      });
+      const mockFetch = vi.fn().mockResolvedValue(new Response(bodyStream));
+      const events: {
+        percent: number;
+        transferred: number;
+        total: number;
+      }[] = [];
+      const config = withProgress({
+        onDownloadProgress: (p) => events.push({ ...p }),
+      });
+
+      const wrappedFetch = config.middleware(
+        mockFetch as any,
+        { url: '/test', method: 'GET' } as any
+      );
+      const res = await wrappedFetch('https://example.com');
+
+      expect(await res.text()).toBe('abcde');
+      expect(events.map((e) => e.transferred)).toEqual([3, 5]);
+      expect(events.map((e) => e.total)).toEqual([0, 0]);
+      expect(events.map((e) => e.percent)).toEqual([0, 0]);
+    });
+
+    it('withProgress should not wrap a null-body (204) response', async () => {
+      const mockFetch = vi
+        .fn()
+        .mockResolvedValue(new Response(null, { status: 204 }));
+      const onDownloadProgress = vi.fn();
+      const config = withProgress({ onDownloadProgress });
+
+      const wrappedFetch = config.middleware(
+        mockFetch as any,
+        { url: '/test', method: 'GET' } as any
+      );
+      const res = await wrappedFetch('https://example.com');
+
+      expect(res.status).toBe(204);
+      expect(res.body).toBeNull();
+      expect(await res.text()).toBe('');
+      expect(onDownloadProgress).not.toHaveBeenCalled();
+    });
+
+    it('withProgress should rebuild the response preserving status, statusText and headers', async () => {
+      const enc = new TextEncoder();
+      const bodyStream = new ReadableStream<Uint8Array>({
+        start(c) {
+          c.enqueue(enc.encode('ok'));
+          c.close();
+        },
+      });
+      const mockFetch = vi.fn().mockResolvedValue(
+        new Response(bodyStream, {
+          status: 201,
+          statusText: 'Created',
+          headers: { 'X-Custom': 'kept', 'Content-Type': 'text/plain' },
+        })
+      );
+      const config = withProgress({
+        onDownloadProgress: () => undefined,
+      });
+
+      const wrappedFetch = config.middleware(
+        mockFetch as any,
+        { url: '/test', method: 'GET' } as any
+      );
+      const res = await wrappedFetch('https://example.com');
+
+      expect(res.status).toBe(201);
+      expect(res.statusText).toBe('Created');
+      expect(res.headers.get('X-Custom')).toBe('kept');
+      expect(res.headers.get('Content-Type')).toBe('text/plain');
+      expect(await res.text()).toBe('ok');
+    });
+
+    it('withProgress middleware should count a ReadableStream request body', async () => {
+      const enc = new TextEncoder();
+      const upload = new ReadableStream<Uint8Array>({
+        start(c) {
+          c.enqueue(enc.encode('abc'));
+          c.enqueue(enc.encode('defg'));
+          c.close();
+        },
+      });
+      const mockFetch = vi
+        .fn()
+        .mockImplementation((_input, init) => new Response(init!.body));
+      const events: {
+        percent: number;
+        transferred: number;
+        total: number;
+      }[] = [];
+      const config = withProgress({
+        onUploadProgress: (p) => events.push({ ...p }),
+      });
+
+      const wrappedFetch = config.middleware(
+        mockFetch as any,
+        { url: '/test', method: 'POST' } as any
+      );
+      const res = await wrappedFetch('https://example.com', {
+        method: 'POST',
+        body: upload,
+      });
+
+      expect(await res.text()).toBe('abcdefg');
+      expect(events.map((e) => e.transferred)).toEqual([3, 7]);
+      // A stream body has no known length: percent stays 0, total stays 0.
+      expect(events.every((e) => e.percent === 0 && e.total === 0)).toBe(true);
+      // fetch received a wrapped stream, not the original one.
+      expect(mockFetch.mock.calls[0]![1].body).not.toBe(upload);
+    });
+
+    it('withProgress middleware should not fire onUploadProgress for a string body', async () => {
+      const onUploadProgress = vi.fn();
+      const mockFetch = vi.fn().mockResolvedValue(new Response('ok'));
+      const config = withProgress({ onUploadProgress });
+
+      const wrappedFetch = config.middleware(
+        mockFetch as any,
+        { url: '/test', method: 'POST' } as any
+      );
+      await wrappedFetch('https://example.com', {
+        method: 'POST',
+        body: 'plain',
+      });
+
+      expect(onUploadProgress).not.toHaveBeenCalled();
+      // Non-stream bodies pass through untouched.
+      expect(mockFetch.mock.calls[0]![1].body).toBe('plain');
+    });
+  });
+
   describe('use with MiddlewareConfig', () => {
     it('should accept simple middleware function', () => {
       const fn: MiddlewareFn = (f) => f;
       const client = use({}, fn);
 
       expect(client.middlewares).toHaveLength(1);
-      expect(client.middlewares[0]!.middleware).toBe(fn);
+      expect(client.middlewares[0].middleware).toBe(fn);
     });
 
     it('should accept middleware config object', () => {
@@ -888,7 +1286,7 @@ describe('Middleware Ordering', () => {
       const client = use({}, config);
 
       expect(client.middlewares).toHaveLength(1);
-      expect(client.middlewares[0]!.name).toBe('builtin:retry');
+      expect(client.middlewares[0].name).toBe('builtin:retry');
     });
 
     it('should accumulate middlewares', () => {
@@ -948,7 +1346,7 @@ describe('Middleware Ordering', () => {
         };
       let capturedAuth: string | undefined;
       const mockFetch = vi.fn().mockImplementation((_, init) => {
-        capturedAuth = (init?.headers as Record<string, string>)?.Authorization;
+        capturedAuth = new Headers(init?.headers).get('Authorization') ?? undefined;
         return Promise.resolve(new Response('ok'));
       });
 
@@ -1007,6 +1405,106 @@ describe('Middleware Ordering', () => {
         'retry-out',
         'timeout-out',
       ]);
+    });
+
+    it('should order withProgress inside named and anonymous NORMAL middlewares', async () => {
+      const enc = new TextEncoder();
+      const upload = new ReadableStream<Uint8Array>({
+        start(c) {
+          c.enqueue(enc.encode('x'));
+          c.close();
+        },
+      });
+      const order: string[] = [];
+      const named: MiddlewareFn =
+        (f) =>
+        async (...params) => {
+          order.push('named-in');
+          const res = await f(...params);
+          order.push('named-out');
+          return res;
+        };
+      const anon: MiddlewareFn =
+        (f) =>
+        async (...params) => {
+          order.push('anon-in');
+          const res = await f(...params);
+          order.push('anon-out');
+          return res;
+        };
+      // Consuming the wrapped upload body inside the mock makes the upload
+      // progress fire within the chain, between the middlewares that
+      // surround progress.
+      const mockFetch = vi.fn().mockImplementation(async (_input, init) => {
+        await new Response(init!.body).text();
+        return new Response('ok');
+      });
+
+      const client = create({ fetch: mockFetch as any })
+        .pipe(use, { name: 'named', outer: NORMAL, middleware: named })
+        .pipe(use, withProgress({ onUploadProgress: () => order.push('upload') }))
+        .pipe(use, anon);
+
+      const response = await client
+        .pipe(url, 'https://example.com')
+        .pipe(method, 'POST')
+        .pipe(body, upload)
+        .pipe(fetch);
+
+      expect(await response.text()).toBe('ok');
+      expect(order).toEqual([
+        'named-in',
+        'anon-in',
+        'upload',
+        'anon-out',
+        'named-out',
+      ]);
+    });
+
+    it('should restart download progress counters on each retry attempt', async () => {
+      // Real timers: retry's backoff sleep must actually elapse (fake
+      // timers leak from the "Middleware Tests" describe above).
+      vi.useRealTimers();
+      const enc = new TextEncoder();
+      const makeBody = () =>
+        new ReadableStream<Uint8Array>({
+          start(c) {
+            c.enqueue(enc.encode('one'));
+            c.enqueue(enc.encode('two'));
+            c.close();
+          },
+        });
+      const mockFetch = vi
+        .fn()
+        .mockResolvedValueOnce(new Response('busy', { status: 503 }))
+        .mockResolvedValueOnce(
+          new Response(makeBody(), { headers: { 'Content-Length': '6' } })
+        );
+      const events: {
+        percent: number;
+        transferred: number;
+        total: number;
+      }[] = [];
+
+      const client = create({ fetch: mockFetch as any })
+        .pipe(use, withRetry(1, { delay: { initial: 1 } }))
+        .pipe(
+          use,
+          withProgress({
+            onDownloadProgress: (p) => events.push({ ...p }),
+          })
+        );
+
+      const res = await client
+        .pipe(url, 'https://example.com')
+        .pipe(fetch);
+
+      expect(await res.text()).toBe('onetwo');
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+      // Progress sits inside retry: the discarded 503 attempt's cancelled
+      // body reports nothing, and the successful attempt counts from zero.
+      expect(events.map((e) => e.transferred)).toEqual([3, 6]);
+      expect(events.map((e) => e.percent)).toEqual([0.5, 1]);
     });
   });
 });

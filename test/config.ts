@@ -4,6 +4,12 @@ import {
   appendUrl,
   baseUrl,
   method,
+  get,
+  post,
+  put,
+  patch,
+  del,
+  head,
   headers,
   header,
   accept,
@@ -35,7 +41,12 @@ import {
   fetch as doFetch,
   toFetchParams,
 } from '@/index';
-import type { MiddlewareFn, StandardSchema } from '@/index';
+import type {
+  MiddlewareFn,
+  Options,
+  StandardSchema,
+  TypedURLSearchParams,
+} from '@/index';
 import { validateSymbol } from '@/constants';
 import { getData, setData } from '@/util';
 
@@ -107,6 +118,112 @@ describe('config-build', function () {
     method({}, 'GET').should.be.eql({ method: 'GET' });
   });
 
+  describe('method sugar', function () {
+    it('sets the correct method for every helper', function () {
+      get({}).should.be.eql({ method: 'GET' });
+      post({}).should.be.eql({ method: 'POST' });
+      put({}).should.be.eql({ method: 'PUT' });
+      patch({}).should.be.eql({ method: 'PATCH' });
+      del({}).should.be.eql({ method: 'DELETE' });
+      head({}).should.be.eql({ method: 'HEAD' });
+    });
+
+    it('sets the url when a path is provided', function () {
+      get({}, '/users').should.be.eql({ method: 'GET', url: '/users' });
+      del({}, '/users/1').should.be.eql({
+        method: 'DELETE',
+        url: '/users/1',
+      });
+    });
+
+    it('keeps the existing url when path is omitted', function () {
+      get({ url: '/old' }).should.be.eql({ method: 'GET', url: '/old' });
+      post({ url: '/old' }, undefined).should.be.eql({
+        method: 'POST',
+        url: '/old',
+      });
+    });
+
+    it('serializes json into the body and sets Content-Type', function () {
+      post({}, '/users', { name: 'Alice' }).should.be.eql({
+        method: 'POST',
+        url: '/users',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{"name":"Alice"}',
+      });
+      patch({ url: '/users/1' }, undefined, { name: 'Bob' }).should.be.eql({
+        method: 'PATCH',
+        url: '/users/1',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{"name":"Bob"}',
+      });
+    });
+
+    it('leaves the body untouched when json is omitted', function () {
+      const o = put({ url: '/u', body: 'raw' }, '/v');
+      o.body.should.be.eql('raw');
+      expect((o as Options).headers).toBeUndefined();
+      o.url.should.be.eql('/v');
+    });
+
+    it('preserves other options through the sugar', function () {
+      const s = new AbortController().signal;
+      get({ signal: s, baseUrl: 'https://x.com' }, '/users').should.be.eql({
+        method: 'GET',
+        url: '/users',
+        baseUrl: 'https://x.com',
+        signal: s,
+      });
+    });
+
+    it('tracks the method and url literal in the result type', () => {
+      const withPath = post({}, '/users', { name: 'a' });
+      expectTypeOf(withPath.method).toEqualTypeOf<'POST'>();
+      expectTypeOf(withPath.url).toEqualTypeOf<'/users'>();
+      // path omitted: the incoming url type survives the sugar
+      const withoutPath = get(url({}, '/u'));
+      expectTypeOf(withoutPath.method).toEqualTypeOf<'GET'>();
+      expectTypeOf(withoutPath.url).toEqualTypeOf<'/u'>();
+    });
+
+    it('composes with the pipe protocol end to end', async function () {
+      const mockFetch = vi.fn().mockResolvedValue(new Response('ok'));
+      const res = await doFetch(
+        post(
+          create({ baseUrl: 'https://x.com', fetch: mockFetch as any }),
+          '/users',
+          { name: 'Alice' }
+        )
+      );
+      expect(res.ok).toBe(true);
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://x.com/users',
+        expect.objectContaining({
+          method: 'POST',
+          body: '{"name":"Alice"}',
+          headers: { 'Content-Type': 'application/json' },
+        })
+      );
+    });
+
+    it('pipes sugar helpers into fetchJSON at the type level', () => {
+      // type-level only: the thunk is never invoked, no request is made
+      const viaPost = () =>
+        create()
+          .pipe(post, '/users', { name: 'a' })
+          .pipe(fetchJSON);
+      expectTypeOf(viaPost).returns.resolves.toEqualTypeOf<unknown>();
+      // path-omitted sugar keeps url, so the client stays fetchable
+      const viaGet = () =>
+        create()
+          .pipe(url, '/u')
+          .pipe(get)
+          .pipe(fetchJSON);
+      expectTypeOf(viaGet).returns.resolves.toEqualTypeOf<unknown>();
+    });
+  });
+
   it('signal', function () {
     const s = new AbortController().signal;
     signal({}, s).should.be.eql({
@@ -120,10 +237,31 @@ describe('config-build', function () {
     });
   });
 
+  it('headers accepts a Headers instance and normalizes it to a record', function () {
+    headers({}, new Headers({ 'X-Token': 'abc' })).should.be.eql({
+      headers: { 'x-token': 'abc' },
+    });
+  });
+
+  it('headers accepts a tuple array and normalizes it to a record', function () {
+    headers({}, [
+      ['X-A', '1'],
+      ['X-B', '2'],
+    ]).should.be.eql({ headers: { 'X-A': '1', 'X-B': '2' } });
+  });
+
   it('header', function () {
     header({}, 'Content-Type', 'application/json').should.be.eql({
       headers: { 'Content-Type': 'application/json' },
     });
+  });
+
+  it('header preserves existing headers when o.headers is a Headers instance', function () {
+    header(
+      { headers: new Headers({ 'X-Old': 'kept' }) } as any,
+      'X-New',
+      'added'
+    ).should.be.eql({ headers: { 'x-old': 'kept', 'X-New': 'added' } });
   });
 
   it('accept', function () {
@@ -382,6 +520,17 @@ describe('config-build', function () {
     body({}, 'test body').should.be.eql({ body: 'test body' });
   });
 
+  it('body passes non-string bodies through as-is', function () {
+    const fd = new FormData();
+    fd.append('file', 'content');
+    expect(body({}, fd).body).toBe(fd);
+    expect(body({}, new Blob(['binary'])).body).toBeInstanceOf(Blob);
+    expect(body({}, new URLSearchParams({ a: '1' })).body).toBeInstanceOf(
+      URLSearchParams
+    );
+    expect(body({}, null).body).toBe(null);
+  });
+
   it('jsonBody', function () {
     jsonBody({}, { key: 'value' }).should.be.eql({
       headers: { 'Content-Type': 'application/json' },
@@ -452,6 +601,22 @@ describe('config-build', function () {
       const result = query({}, new URLSearchParams());
       result.searchParams.size.should.be.eql(0);
     });
+
+    it('should stringify number and boolean record values', function () {
+      const result = query({}, { page: 1, active: true, archived: false });
+      result.searchParams.get('page')!.should.be.eql('1');
+      result.searchParams.get('active')!.should.be.eql('true');
+      result.searchParams.get('archived')!.should.be.eql('false');
+    });
+
+    it('should accept mixed-type tuple input', function () {
+      const result = query({}, [
+        ['page', 1],
+        ['active', true],
+        ['tag', 'a'],
+      ]);
+      result.searchParams.toString().should.be.eql('page=1&active=true&tag=a');
+    });
   });
 
   describe('mergeQuery', function () {
@@ -492,6 +657,25 @@ describe('config-build', function () {
       result.searchParams.get('page')!.should.be.eql('1');
       result.searchParams.get('limit')!.should.be.eql('10');
     });
+
+    it('should stringify non-string values when merging an object', function () {
+      const existing = new URLSearchParams('page=1');
+      const result = mergeQuery({ searchParams: existing }, {
+        limit: 10,
+        active: true,
+      });
+      result.searchParams
+        .toString()
+        .should.be.eql('page=1&limit=10&active=true');
+    });
+
+    it('should merge mixed-type tuple input', function () {
+      const result = mergeQuery({}, [
+        ['page', 1],
+        ['tag', 'a'],
+      ]);
+      result.searchParams.toString().should.be.eql('page=1&tag=a');
+    });
   });
 
   describe('querySet', function () {
@@ -518,6 +702,24 @@ describe('config-build', function () {
       const result = querySet({ searchParams: existing }, 'limit', '10');
       result.searchParams.toString().should.be.eql('page=1&limit=10');
     });
+
+    it('should stringify number and boolean values', function () {
+      const result = querySet({}, 'page', 1);
+      result.searchParams.toString().should.be.eql('page=1');
+      const withFlag = querySet(result, 'active', true);
+      withFlag.searchParams.toString().should.be.eql('page=1&active=true');
+    });
+
+    it('tracks stringified literals in the phantom type', () => {
+      const result = querySet({}, 'page', 1);
+      expectTypeOf(result.searchParams).toEqualTypeOf<
+        TypedURLSearchParams<{ page: '1' }>
+      >();
+      const chained = querySet(result, 'active', true);
+      expectTypeOf(chained.searchParams).toEqualTypeOf<
+        TypedURLSearchParams<{ page: '1'; active: 'true' }>
+      >();
+    });
   });
 
   describe('queryAppend', function () {
@@ -541,6 +743,21 @@ describe('config-build', function () {
       const existing = new URLSearchParams('page=1');
       const result = queryAppend({ searchParams: existing }, 'limit', '10');
       result.searchParams.toString().should.be.eql('page=1&limit=10');
+    });
+
+    it('should stringify number and boolean values', function () {
+      const result = queryAppend({}, 'limit', 10);
+      result.searchParams.toString().should.be.eql('limit=10');
+      const withFlag = queryAppend(result, 'active', false);
+      withFlag.searchParams.toString().should.be.eql('limit=10&active=false');
+    });
+
+    it('tracks stringified literals in the phantom type', () => {
+      const first = queryAppend({}, 'tag', 'a');
+      const second = queryAppend(first, 'tag', 2);
+      expectTypeOf(second.searchParams).toEqualTypeOf<
+        TypedURLSearchParams<{ tag: ['a', '2'] }>
+      >();
     });
   });
 

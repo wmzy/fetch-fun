@@ -179,7 +179,7 @@ describe('Middleware Chain Integration Tests', () => {
     });
 
     it('should handle multiple middlewares with mocked request', async () => {
-      const logs: Array<{ msg: string; data?: unknown }> = [];
+      const logs: { msg: string; data?: unknown }[] = [];
       const logger = (msg: string, data?: unknown) => logs.push({ msg, data });
 
       const mockFetch = vi.fn().mockResolvedValue(
@@ -204,9 +204,9 @@ describe('Middleware Chain Integration Tests', () => {
     });
 
     it('should handle authentication middleware with mocked request', async () => {
-      let capturedHeaders: Record<string, string> = {};
+      let capturedHeaders = new Headers();
       const mockFetch = vi.fn().mockImplementation((_, init) => {
-        capturedHeaders = (init?.headers as Record<string, string>) || {};
+        capturedHeaders = new Headers(init?.headers);
         return Promise.resolve(new Response('ok', { status: 200 }));
       });
 
@@ -222,7 +222,7 @@ describe('Middleware Chain Integration Tests', () => {
         .pipe(fetch);
 
       expect(response.ok).toBe(true);
-      expect(capturedHeaders.Authorization).toBe('Bearer test-token');
+      expect(capturedHeaders.get('Authorization')).toBe('Bearer test-token');
       expect(mockFetch.mock.calls[0]?.[0]).toBe('https://example.com/headers');
     });
 

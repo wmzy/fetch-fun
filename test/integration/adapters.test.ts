@@ -148,8 +148,10 @@ describe('Adapters Integration Tests', () => {
 
   describe('Workers adapter (when implemented)', () => {
     it('should work with Cloudflare Workers fetch API', async () => {
+      let capturedInit: RequestInit | undefined;
       const mockWorkersFetch = vi.fn().mockImplementation((url, init) => {
-        const authHeader = (init?.headers as Record<string, string>)?.Authorization;
+        capturedInit = init;
+        const authHeader = new Headers(init?.headers).get('Authorization');
         if (!authHeader) {
           return Promise.reject(new Error('Missing Authorization'));
         }
@@ -171,12 +173,11 @@ describe('Adapters Integration Tests', () => {
       expect(data).toEqual({ worker: true });
       expect(mockWorkersFetch).toHaveBeenCalledWith(
         'https://example.com/worker-endpoint',
-        expect.objectContaining({
-          headers: expect.objectContaining({
-            Authorization: 'Bearer worker-token',
-          }),
-        })
+        capturedInit
       );
+      expect(
+        new Headers(capturedInit?.headers).get('Authorization')
+      ).toBe('Bearer worker-token');
     });
 
     it('should handle Workers-specific errors', async () => {
@@ -216,9 +217,9 @@ describe('Adapters Integration Tests', () => {
     });
 
     it('should work with auth middleware across all adapters', async () => {
-      let capturedHeaders: Record<string, string> = {};
+      let capturedHeaders = new Headers();
       const mockFetch = vi.fn().mockImplementation((_, init) => {
-        capturedHeaders = (init?.headers as Record<string, string>) || {};
+        capturedHeaders = new Headers(init?.headers);
         return Promise.resolve(new Response(JSON.stringify({ success: true }), {
           headers: { 'Content-Type': 'application/json' },
         }));
@@ -233,7 +234,7 @@ describe('Adapters Integration Tests', () => {
 
       await client.pipe(fetch);
 
-      expect(capturedHeaders.Authorization).toBe('Bearer test-token-123');
+      expect(capturedHeaders.get('Authorization')).toBe('Bearer test-token-123');
     });
 
     it('should reject fetch when middlewares form a dependency cycle', async () => {
