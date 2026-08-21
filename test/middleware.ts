@@ -4,6 +4,8 @@ import {
   create,
   url,
   fetch,
+  fetchData,
+  fetchJSON,
   use,
   signal,
   method,
@@ -551,6 +553,99 @@ describe('Middleware Tests', () => {
       validationClient.pipe(url, 'https://example.com').pipe(fetch)
     ).rejects.toThrow(ValidationError);
     expect(validationFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('should surface HTTPError (not a reader SyntaxError) for non-2xx non-JSON bodies', async () => {
+    // Regression: the data middleware's reader ran unconditionally, so an
+    // HTML 500 page fed to the json reader threw SyntaxError before
+    // fetchJSON's !res.ok -> HTTPError check could ever run.
+    const mockFetch = vi.fn().mockResolvedValue(
+      new Response('<html>Server Error</html>', {
+        status: 500,
+        headers: { 'Content-Type': 'text/html' },
+      })
+    );
+    const client = create({ fetch: mockFetch }).pipe(json);
+
+    let caught: unknown;
+    try {
+      await client.pipe(url, 'https://example.com/boom').pipe(fetchJSON);
+    } catch (e) {
+      caught = e;
+    }
+
+    expect(caught).toBeInstanceOf(HTTPError);
+    expect((caught as HTTPError).response.status).toBe(500);
+    expect((caught as HTTPError).data).toBeUndefined();
+  });
+
+  it('should keep a parseable error body on HTTPError for non-2xx JSON bodies', async () => {
+    // The non-2xx reader branch is best-effort: a body that does parse is
+    // still stored so HTTPError.data carries the parsed error payload.
+    const mockFetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ error: 'missing' }), {
+        status: 404,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    );
+    const client = create({ fetch: mockFetch }).pipe(json);
+
+    let caught: unknown;
+    try {
+      await client.pipe(url, 'https://example.com/missing').pipe(fetchJSON);
+    } catch (e) {
+      caught = e;
+    }
+
+    expect(caught).toBeInstanceOf(HTTPError);
+    expect((caught as HTTPError).response.status).toBe(404);
+    expect((caught as HTTPError).data).toEqual({ error: 'missing' });
+  });
+
+  it('should resolve undefined for an empty-bodied 204 with json + fetchData', async () => {
+    // A 204 has no body: json's empty-body guard must resolve undefined
+    // instead of throwing SyntaxError('Unexpected end of JSON input').
+    const mockFetch = vi
+      .fn()
+      .mockResolvedValue(new Response(null, { status: 204 }));
+    const client = create({ fetch: mockFetch }).pipe(json);
+
+    const data = await client
+      .pipe(url, 'https://example.com/nada')
+      .pipe(fetchData);
+
+    expect(data).toBeUndefined();
+  });
+
+  it('should skip schema validation on non-2xx and surface HTTPError', async () => {
+    // A 500 must reject with HTTPError, never a ValidationError: the
+    // schema is not even consulted for non-2xx responses.
+    const validateSpy = vi.fn(() => ({ value: null }));
+    const schema = {
+      '~standard': {
+        version: 1,
+        vendor: 'test',
+        validate: validateSpy,
+      },
+    } as const satisfies StandardSchema;
+    const mockFetch = vi
+      .fn()
+      .mockResolvedValue(new Response('Internal Server Error', { status: 500 }));
+    const client = create({ fetch: mockFetch })
+      .pipe(json)
+      .pipe(validate, schema);
+
+    let caught: unknown;
+    try {
+      await client.pipe(url, 'https://example.com/boom').pipe(fetchJSON);
+    } catch (e) {
+      caught = e;
+    }
+
+    expect(caught).toBeInstanceOf(HTTPError);
+    expect(caught).not.toBeInstanceOf(ValidationError);
+    expect((caught as HTTPError).response.status).toBe(500);
+    expect(validateSpy).not.toHaveBeenCalled();
   });
 });
 

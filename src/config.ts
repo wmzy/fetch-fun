@@ -183,8 +183,9 @@ export function get<
  *
  * @param o - The options object to modify
  * @param path - The URL path; when omitted, the existing `url` is kept
- * @param json - The JSON request body (not to be confused with the
- * response-parsing {@link json})
+ * @param json - The JSON request body (jsonBody semantics: stringified
+ * with Content-Type application/json); the response-side reader is
+ * {@link json}
  * @returns A new options object with the method (and optionally url/body) set
  *
  * @example
@@ -965,6 +966,12 @@ export function checkError<T extends Options>(
  * Reads and stores response data using the provided reader function.
  * The data can be retrieved later using `getData()`.
  *
+ * For non-2xx responses the read is best-effort: a successful read is
+ * still stored so `HTTPError.data` can carry the parsed error body, a
+ * failing read stores `undefined` (so the reader error never masks the
+ * `HTTPError` that `fetchData`/`fetchJSON` throw afterwards), and schema
+ * validation is skipped.
+ *
  * @param o - The options object to modify
  * @param reader - Function to read data from the response
  * @returns A new options object with the data reader middleware added
@@ -995,6 +1002,22 @@ export function data<T extends Options, R>(
     const currentReader = (finalOptions as any)[readDataSymbol] as (
       res: Response
     ) => unknown;
+
+    if (!res.ok) {
+      // Non-2xx: fetchData/fetchJSON reject with HTTPError once the
+      // middleware chain resolves. Reading the body is best-effort — a
+      // successful read is stored so HTTPError.data can carry the parsed
+      // error body, while a failing read (e.g. an HTML error page fed to
+      // a JSON parser) degrades to undefined instead of surfacing a
+      // reader error that would mask the HTTPError.
+      try {
+        setData(res, await currentReader(res));
+      } catch {
+        setData(res, undefined);
+      }
+      return res;
+    }
+
     setData(res, await currentReader(res));
     await validateData(res, finalOptions);
     return res;
@@ -1013,12 +1036,20 @@ export function data<T extends Options, R>(
  * becomes the inferred data type. Without a parser the behavior is
  * `JSON.parse` of the response text.
  *
+ * Empty bodies (e.g. 204/205/HEAD responses) resolve to `undefined`
+ * instead of throwing a `SyntaxError`; the guard applies to the default
+ * parser and to a custom `parseJson` alike.
+ *
  * **Breaking change:** this function no longer sets a `Content-Type:
  * application/json` request header — it only configures response parsing,
  * so a GET request with `json()` no longer sends a meaningless header.
  * To send JSON, use {@link jsonBody} (which sets both body and
  * `Content-Type: application/json`), or set request headers explicitly
  * with {@link contentType} / {@link header}.
+ *
+ * Note the naming overlap: the method sugar's third argument
+ * (`post(o, path, json)`) is the request body — this function is the
+ * response reader.
  *
  * @param o - The options object to modify
  * @param parseJson - Optional custom parser for the raw response text
@@ -1046,7 +1077,14 @@ export function json<T extends Options, D = unknown>(
   middlewares: [MiddlewareEntry, ...MiddlewareEntry[]];
   [readDataSymbol]: (res: Response) => Promise<D>;
 } {
-  return data(o, async (res) => parseJson(await res.text()));
+  return data(o, async (res) => {
+    const raw = await res.text();
+    // Empty bodies (204/205/HEAD responses) resolve to undefined instead
+    // of throwing a SyntaxError. The guard wraps the default parser and
+    // user-supplied parseJson alike.
+    if (raw.trim() === '') return undefined as D;
+    return parseJson(raw);
+  });
 }
 
 /**

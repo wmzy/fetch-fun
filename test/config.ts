@@ -541,6 +541,38 @@ describe('config-build', function () {
     getData<any>(res).should.be.eql({ n: 1 });
   });
 
+  it('json resolves undefined for an empty body (204/205/HEAD)', async function () {
+    // Regression: an empty body used to hit JSON.parse and throw
+    // SyntaxError('Unexpected end of JSON input') before the empty-body
+    // guard was added around the default parser.
+    const mw = json({});
+    const res = await mw.middlewares[0].middleware(
+      () => Promise.resolve(new Response(null, { status: 204 })),
+      mw as any
+    )('');
+    expect(getData(res)).to.equal(undefined);
+  });
+
+  it('json resolves undefined for a whitespace-only body', async function () {
+    const mw = json({});
+    const res = await mw.middlewares[0].middleware(
+      () => Promise.resolve(new Response('   \n\t ')),
+      mw as any
+    )('');
+    expect(getData(res)).to.equal(undefined);
+  });
+
+  it('json empty-body guard wraps a custom parser, which is not invoked', async function () {
+    const parseJson = vi.fn((raw: string) => JSON.parse(raw));
+    const mw = json({}, parseJson);
+    const res = await mw.middlewares[0].middleware(
+      () => Promise.resolve(new Response(null, { status: 204 })),
+      mw as any
+    )('');
+    expect(getData(res)).to.equal(undefined);
+    expect(parseJson).not.toHaveBeenCalled();
+  });
+
   it('data reader type flows into fetchData without explicit generics', () => {
     // type-level only: the thunks are never invoked, no request is made
     const viaData = () =>
