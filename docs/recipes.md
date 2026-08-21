@@ -371,3 +371,114 @@ try {
   }
 }
 ```
+
+## Streaming responses & Server-Sent Events
+
+Live streams are the one place where the data-out executors are the wrong tool — by design. `fetchData`'s contract is *buffer, then resolve*: the reader middlewares (`json`, `text`) consume the body to completion before your code sees a byte, `validate` runs after that, and `HTTPError` describes a finished response. SSE wants the opposite — events as they arrive. So drop down to the raw `fetch()` executor: it resolves the native `Response` the moment headers land, the body stays a live `ReadableStream`, and what a status means is yours to decide (`res.ok`, checked by hand).
+
+```typescript
+import * as ff from 'fetch-fun';
+
+const api = ff
+  .create({ baseUrl: 'https://api.example.com' })
+  .pipe(ff.use, ff.withAuth(token)); // EventSource cannot send headers — fetch can
+
+type SSEEvent = { event: string; data: string; id?: string };
+
+// Minimal SSE framing: `event:`/`data:`/`id:` lines, blank line dispatches.
+// (`retry:` is deliberately unparsed — reconnect pacing belongs to the caller.)
+async function readSSE(
+  res: Response,
+  onEvent: (e: SSEEvent) => void,
+): Promise<void> {
+  // res.body was checked by the caller; frames arrive split across
+  // read() chunks, so decoded text is buffered until a newline closes a line
+  const reader = res.body!.getReader();
+  const decoder = new TextDecoder();
+  let unparsed = '';
+  let event = 'message';
+  const data: string[] = [];
+  let id: string | undefined;
+
+  const line = (raw: string) => {
+    const l = raw.replace(/\r$/, ''); // normalize CRLF
+    if (l === '') {
+      // Blank line: dispatch what accumulated, then reset the frame
+      if (data.length) onEvent({ event, data: data.join('\n'), id });
+      event = 'message';
+      data.length = 0;
+      id = undefined;
+    } else if (!l.startsWith(':')) {
+      // `:`-prefixed lines are comments / keep-alives — skip them
+      const colon = l.indexOf(':');
+      const field = colon === -1 ? l : l.slice(0, colon);
+      const value = (colon === -1 ? '' : l.slice(colon + 1)).replace(/^ /, '');
+      if (field === 'data') data.push(value); // multi-line data joins on \n
+      else if (field === 'event') event = value || 'message';
+      else if (field === 'id') id = value;
+    }
+  };
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    unparsed += decoder.decode(value, { stream: true });
+    const lines = unparsed.split('\n');
+    unparsed = lines.pop()!; // trailing partial line stays buffered
+    for (const l of lines) line(l);
+  }
+}
+```
+
+The reader settles one connection; subscriptions outlive connections. The loop below owns that half — reconnecting with `Last-Event-ID` so the server can replay what was missed while the wire was down:
+
+```typescript
+async function subscribe(onEvent: (e: SSEEvent) => void, signal: AbortSignal) {
+  let lastEventId: string | undefined;
+  let delay = 1000;
+
+  while (!signal.aborted) {
+    try {
+      const res = await api
+        .pipe(ff.get, '/events')
+        .pipe(ff.accept, 'text/event-stream')
+        .pipe(ff.headers, lastEventId ? { 'Last-Event-ID': lastEventId } : {})
+        .pipe(ff.signal, signal) // one controller owns connects, streams, and gaps
+        .pipe(ff.fetch); // resolves at headers — a mid-body break lands in catch
+
+      if (res.ok && res.body) {
+        await readSSE(res, (e) => {
+          if (e.id) lastEventId = e.id; // replay point for the next connect
+          onEvent(e);
+        });
+        delay = 1000; // a healthy stream resets the backoff
+      }
+    } catch {
+      if (signal.aborted) return; // user cancelled, not an outage
+      // else: connection died mid-stream — fall through and reconnect
+    }
+    // Cancellable backoff; swap in your favorite jittered scheme
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, delay);
+      signal.addEventListener(
+        'abort',
+        () => {
+          clearTimeout(timer);
+          resolve();
+        },
+        { once: true },
+      );
+    });
+    delay = Math.min(delay * 2, 15000);
+  }
+}
+```
+
+**Why the reconnect loop is yours, not `retry`'s.** Retry — like every transport middleware — operates on the promise `fetch()` returns, and that promise settles when *headers* arrive. A stream that dies an hour in breaks long after that resolution, where no middleware can see it: `retry` covers the connection-establishment phase only, and mid-stream resilience is the loop above. (Piping `retry` on top would multiply connect attempts for no gain — the same don't-run-two-layers rule as the TanStack recipe.) On reconnect, `Last-Event-ID` hands the server the id of the last dispatched event; replaying everything after it is the server's job, so the client keeps no event log. The one policy decision left open: the loop above retries every failure including non-2xx statuses — production code usually stops on permanent ones (401, 404) right at the `res.ok` branch instead of hammering.
+
+**Timeouts budget connections, not streams.** `timeout` / `totalTimeout` are wall-clock budgets started when the request executes, and the armed signal stays live after headers arrive: pointed at an SSE endpoint, a 5s budget cuts the stream at 5s — surfacing from `reader.read()` as a raw `TimeoutError` `DOMException`, not the library's typed `TimeoutError`, whose mapping has already exited with the resolved promise. Hence the example pipes neither: for a long-lived stream, leave the budgets off and interrupt with your own `signal`, which cancels the connect, the body, and the backoff wait alike.
+
+**Why not `EventSource`?** It's the platform's SSE client, but it cannot set request headers — no `Authorization`, and reconnect behavior you don't control. The raw-`fetch` route is the only way to get authenticated SSE at all, and as `readSSE` shows, the wire format is small enough that owning the parser costs less than fighting the platform.
+
+Part of the fetch-fun documentation — back to [README](../README.md).
+

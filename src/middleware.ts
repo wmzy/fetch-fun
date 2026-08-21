@@ -651,16 +651,63 @@ export type ProgressOptions = {
   /**
    * Called for every chunk read from the request body.
    *
-   * Only a `ReadableStream` request body can be observed: every other body
-   * shape (string, BufferSource, Blob, URLSearchParams, FormData) is passed
-   * through untouched and never triggers this callback — the library does
-   * not serialize request bodies just to count them. Note that native
-   * `fetch` requires `duplex: 'half'` for stream bodies, which callers
-   * must set themselves. Like downloads, `total` is `0` (and `percent`
-   * stays `0`) because a stream's length is not known up front.
+   * By default only a `ReadableStream` request body can be observed:
+   * every other body shape (string, BufferSource, Blob, URLSearchParams,
+   * FormData) is passed through untouched and never triggers this
+   * callback — the library does not serialize request bodies just to
+   * count them. Set {@link ProgressOptions.wrapBody} to also observe the
+   * wrappable shapes. For a bare stream body `total` is `0` (and
+   * `percent` stays `0`) because its length is not known up front; a
+   * wrapped body reports the real byte size. Note that native `fetch`
+   * requires `duplex: 'half'` for stream bodies — callers must set it
+   * themselves for a bare stream, while {@link ProgressOptions.wrapBody}
+   * sets it automatically when it does the wrapping.
    */
   onUploadProgress?: (progress: ProgressState, chunk: Uint8Array) => void;
+  /**
+   * Wrap non-stream request bodies (string, Blob, ArrayBuffer,
+   * ArrayBufferView, URLSearchParams) into a counting stream so
+   * {@link ProgressOptions.onUploadProgress} fires for them too, with
+   * `total` set to the body's real byte size (making `percent`
+   * meaningful). Defaults to `false`: bodies pass through untouched.
+   *
+   * `FormData` is never wrapped (it is passed through as-is — it cannot
+   * be sized without serializing it), and a `ReadableStream` body always
+   * takes the existing counting path with `total: 0`.
+   *
+   * Because a stream body loses the implicit `Content-Type` headers that
+   * native `fetch` adds for string (`text/plain;charset=UTF-8`) and
+   * URLSearchParams (`application/x-www-form-urlencoded;charset=UTF-8`)
+   * bodies, those defaults are restored when the request headers do not
+   * set a `Content-Type` explicitly. `duplex: 'half'` is likewise set on
+   * the wrapped request (without overriding a caller-provided value).
+   */
+  wrapBody?: boolean;
 }
+
+/**
+ * Request bodies {@link ProgressOptions.wrapBody} can convert to a counting
+ * stream: everything with a known byte size except `FormData` (opaque until
+ * serialized) and `ReadableStream` (already streams — it takes the existing
+ * counting path).
+ */
+function isWrappableBody(
+  body: unknown
+): body is string | Blob | ArrayBuffer | ArrayBufferView | URLSearchParams {
+  return (
+    typeof body === 'string' ||
+    body instanceof Blob ||
+    body instanceof URLSearchParams ||
+    body instanceof ArrayBuffer ||
+    ArrayBuffer.isView(body)
+  );
+}
+
+/**
+ * `RequestInit` widened with `duplex`, which native fetch requires for
+ * stream bodies but lib.dom does not declare yet.
+ */
+type StreamInit = RequestInit & { duplex?: 'half' | 'full' };
 
 /**
  * Wraps `body` in a counting stream, reporting each chunk via `onProgress`
@@ -710,8 +757,11 @@ function trackStream(
  * callbacks. `total` comes from `Content-Length`; without it `total` is
  * `0` and `percent` stays `0` while `transferred` still counts bytes.
  *
- * Uploads are counted only when the request `init.body` is already a
- * `ReadableStream` (see {@link ProgressOptions.onUploadProgress}).
+ * Uploads are counted when the request `init.body` is already a
+ * `ReadableStream` (see {@link ProgressOptions.onUploadProgress}); with
+ * `wrapBody: true` the other wrappable body shapes are converted to a
+ * counting stream first, reporting a real `total` (see
+ * {@link ProgressOptions.wrapBody}).
  *
  * Callbacks fire while the body streams — i.e. after the fetch call has
  * resolved — so they must not throw for a request to succeed.
@@ -737,7 +787,44 @@ export function withProgress(opts: ProgressOptions = {}) {
     middleware: ((f, _o) =>
       async (input, init) => {
         let nextInit = init;
-        if (opts.onUploadProgress && init?.body instanceof ReadableStream) {
+        const body = init?.body;
+        if (
+          opts.onUploadProgress &&
+          opts.wrapBody &&
+          init &&
+          isWrappableBody(body)
+        ) {
+          // One Blob covers both needs: its size is the exact byte length
+          // and its stream feeds the counting pipe (Blob parts reference
+          // BufferSource/Blob data instead of copying; URLSearchParams
+          // stringifies to its serialized form, like native fetch).
+          const blob = new Blob([body as BlobPart]);
+          // A stream body loses the implicit Content-Type that native
+          // fetch adds for string and URLSearchParams bodies — restore
+          // the same defaults unless the caller set one explicitly.
+          const headers = new Headers(init.headers);
+          const implicitCT =
+            typeof body === 'string'
+              ? 'text/plain;charset=UTF-8'
+              : body instanceof URLSearchParams
+                ? 'application/x-www-form-urlencoded;charset=UTF-8'
+                : null;
+          if (implicitCT && !headers.has('Content-Type')) {
+            headers.set('Content-Type', implicitCT);
+          }
+          const wrappedInit: StreamInit = {
+            ...init,
+            headers,
+            body: trackStream(blob.stream(), blob.size, opts.onUploadProgress),
+            // Native fetch requires duplex for stream bodies; never
+            // override a caller-provided value.
+            duplex: (init as StreamInit).duplex ?? 'half',
+          };
+          nextInit = wrappedInit;
+        } else if (
+          opts.onUploadProgress &&
+          init?.body instanceof ReadableStream
+        ) {
           // A wrapped body keeps streaming: no Content-Length claim, no
           // serialization — total stays unknown (0), percent stays 0.
           nextInit = {

@@ -1,4 +1,4 @@
-import { readDataSymbol } from './constants';
+import { mapErrorSymbol, readDataSymbol } from './constants';
 
 /**
  * HTTP request method types.
@@ -309,12 +309,23 @@ export type Client<Q extends QueryType = QueryType> = Options<Q> & Pipe;
  * by `data()`/`json()`/`text()`/`blob()`. It is optional here so unbranded
  * options remain valid fetchables; branded options carry the required form
  * and light up {@link ReaderData} inference in `fetchData`.
+ *
+ * The optional `[mapErrorSymbol]` member mirrors the error-mapper slot set
+ * by `mapError()`.
  */
 export type Fetchable<Q extends QueryType = QueryType> = {
   url: string;
 } & Options<Q> & {
     [readDataSymbol]?: (res: Response) => unknown;
+    [mapErrorSymbol]?: (e: unknown, ctx: MapErrorContext) => unknown;
   };
+
+/**
+ * Context handed to a `mapError` mapper: the failed `response` and the
+ * originating `request` when the error is an `HTTPError`, and empty
+ * otherwise (e.g. `NetworkError`, `TimeoutError`, `ValidationError`).
+ */
+export type MapErrorContext = { response?: Response; request?: Request };
 
 /**
  * Result returned by a Standard Schema v1 `validate` function.

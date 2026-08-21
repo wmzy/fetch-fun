@@ -10,6 +10,7 @@ import type {
   MW,
   InferMiddlewareName,
   MapMiddlewares,
+  MapErrorContext,
   Options,
   QueryType,
   SchemaOutput,
@@ -17,7 +18,7 @@ import type {
   StandardSchema,
   TypedURLSearchParams,
 } from './types';
-import { readDataSymbol, validateSymbol } from './constants';
+import { mapErrorSymbol, readDataSymbol, validateSymbol } from './constants';
 import { getData, hasData, setData } from './util';
 import { ValidationError } from './errors';
 
@@ -995,6 +996,44 @@ export function checkError<T extends Options>(
     await check(res);
     return res;
   });
+}
+
+/**
+ * Adds a last-hop error mapper, transforming any error right before
+ * `fetchData`/`fetchJSON` throws it to the caller (the counterpart of
+ * ky's `beforeError` and up-fetch's `parseRejected`).
+ *
+ * The mapper runs after the whole middleware chain — including retry —
+ * has settled, so retry always sees and decides on the original error;
+ * only the finally thrown value is mapped. Every error type passes
+ * through the mapper alike: `HTTPError`, `NetworkError`, `TimeoutError`,
+ * `ValidationError`, and errors thrown by user middleware. The returned
+ * value is thrown as-is (usually a transformed `Error`; throwing from
+ * inside the mapper rethrows that instead). Async mappers are awaited.
+ * For `HTTPError` the mapper receives the failed `response` and the
+ * originating `request` in `ctx`; otherwise `ctx` is empty.
+ *
+ * As with `timeout()`, piping `mapError` again replaces the previous
+ * mapper.
+ *
+ * @param o - The options object to modify
+ * @param mapper - Function that maps the thrown error, optionally async
+ * @returns A new options object with the error mapper attached
+ *
+ * @example
+ * ```ts
+ * client.pipe(mapError, (e, ctx) =>
+ *   new ApiError(`Request failed (${ctx.response?.status})`, { cause: e })
+ * )
+ * ```
+ */
+export function mapError<T extends Options>(
+  o: T,
+  mapper: (e: unknown, ctx: MapErrorContext) => unknown
+): T & {
+  [mapErrorSymbol]: (e: unknown, ctx: MapErrorContext) => unknown;
+} {
+  return { ...o, [mapErrorSymbol]: mapper };
 }
 
 /**

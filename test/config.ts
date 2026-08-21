@@ -19,6 +19,7 @@ import {
   use,
   retry,
   mapResponse,
+  mapError,
   checkError,
   data,
   json,
@@ -50,7 +51,7 @@ import type {
   StandardSchema,
   TypedURLSearchParams,
 } from '@/index';
-import { validateSymbol } from '@/constants';
+import { mapErrorSymbol, validateSymbol } from '@/constants';
 import { getData, setData } from '@/util';
 
 describe('config-build', function () {
@@ -1091,6 +1092,28 @@ describe('config-build', function () {
       expectTypeOf(viaOverride).returns.resolves.toEqualTypeOf<{
         override: true;
       }>();
+    });
+  });
+
+  describe('mapError', function () {
+    it('should store the mapper under the symbol key', function () {
+      const mapper = (e: unknown) => e;
+      const result = mapError({ url: 'https://x.y' }, mapper);
+      result.url.should.be.eql('https://x.y');
+      (result as any)[mapErrorSymbol].should.be.equal(mapper);
+    });
+
+    it('should overwrite a previous mapper (last pipe wins)', function () {
+      const first = () => new Error('first');
+      const second = () => new Error('second');
+      const result = mapError(mapError({ url: 'https://x.y' }, first), second);
+      (result as any)[mapErrorSymbol].should.be.equal(second);
+    });
+
+    it('should not mutate the input options', function () {
+      const original = { url: 'https://x.y' };
+      mapError(original, (e) => e);
+      expect(Object.getOwnPropertySymbols(original)).toHaveLength(0);
     });
   });
 });

@@ -1415,6 +1415,243 @@ describe('Middleware Ordering', () => {
       // Non-stream bodies pass through untouched.
       expect(mockFetch.mock.calls[0]![1].body).toBe('plain');
     });
+
+    it('withProgress wrapBody should count a string body with a real total', async () => {
+      vi.useRealTimers();
+      const payload = 'héllo wörld'; // multi-byte: total must be UTF-8 bytes
+      const seen: string[] = [];
+      const mockFetch = vi.fn().mockImplementation(async (_input, init) => {
+        // Consume the wrapped stream so the counting transform runs.
+        seen.push(await new Response(init!.body).text());
+        return new Response('ok');
+      });
+      const events: {
+        percent: number;
+        transferred: number;
+        total: number;
+      }[] = [];
+      const config = withProgress({
+        wrapBody: true,
+        onUploadProgress: (p) => events.push({ ...p }),
+      });
+
+      const wrappedFetch = config.middleware(
+        mockFetch as any,
+        { url: '/test', method: 'POST' } as any
+      );
+      await wrappedFetch('https://example.com', {
+        method: 'POST',
+        body: payload,
+      });
+
+      expect(seen).toEqual([payload]);
+      expect(events.length).toBeGreaterThan(0);
+      const last = events[events.length - 1]!;
+      expect(last.total).toBe(new TextEncoder().encode(payload).byteLength);
+      expect(last.transferred).toBe(last.total);
+      expect(last.percent).toBe(1);
+      // The body reached fetch as a counting stream with duplex set.
+      expect(mockFetch.mock.calls[0]![1].body).toBeInstanceOf(ReadableStream);
+      expect(mockFetch.mock.calls[0]![1].duplex).toBe('half');
+    });
+
+    it('withProgress wrapBody should not override an explicit Content-Type', async () => {
+      vi.useRealTimers();
+      const mockFetch = vi.fn().mockResolvedValue(new Response('ok'));
+      const config = withProgress({
+        wrapBody: true,
+        onUploadProgress: () => undefined,
+      });
+
+      const wrappedFetch = config.middleware(
+        mockFetch as any,
+        { url: '/test', method: 'POST' } as any
+      );
+      await wrappedFetch('https://example.com', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{"a":1}',
+      });
+
+      const init = mockFetch.mock.calls[0]![1];
+      expect(new Headers(init.headers).get('Content-Type')).toBe(
+        'application/json'
+      );
+      expect(init.body).toBeInstanceOf(ReadableStream);
+    });
+
+    it('withProgress wrapBody should add the implicit text/plain Content-Type for a bare string', async () => {
+      vi.useRealTimers();
+      const mockFetch = vi.fn().mockResolvedValue(new Response('ok'));
+      const config = withProgress({
+        wrapBody: true,
+        onUploadProgress: () => undefined,
+      });
+
+      const wrappedFetch = config.middleware(
+        mockFetch as any,
+        { url: '/test', method: 'POST' } as any
+      );
+      await wrappedFetch('https://example.com', {
+        method: 'POST',
+        body: 'plain text',
+      });
+
+      expect(
+        new Headers(mockFetch.mock.calls[0]![1].headers).get('Content-Type')
+      ).toBe('text/plain;charset=UTF-8');
+    });
+
+    it('withProgress wrapBody should add the implicit form Content-Type for URLSearchParams', async () => {
+      vi.useRealTimers();
+      const seen: string[] = [];
+      const mockFetch = vi.fn().mockImplementation(async (_input, init) => {
+        seen.push(await new Response(init!.body).text());
+        return new Response('ok');
+      });
+      const config = withProgress({
+        wrapBody: true,
+        onUploadProgress: () => undefined,
+      });
+
+      const wrappedFetch = config.middleware(
+        mockFetch as any,
+        { url: '/test', method: 'POST' } as any
+      );
+      await wrappedFetch('https://example.com', {
+        method: 'POST',
+        body: new URLSearchParams({ a: '1', b: '2' }),
+      });
+
+      expect(seen).toEqual(['a=1&b=2']);
+      expect(
+        new Headers(mockFetch.mock.calls[0]![1].headers).get('Content-Type')
+      ).toBe('application/x-www-form-urlencoded;charset=UTF-8');
+    });
+
+    it('withProgress wrapBody should count a Blob body without adding Content-Type', async () => {
+      vi.useRealTimers();
+      const bytes = new Uint8Array([1, 2, 3, 4, 5]);
+      const blob = new Blob([bytes]); // typeless: no implicit Content-Type
+      const seen: number[][] = [];
+      const mockFetch = vi.fn().mockImplementation(async (_input, init) => {
+        const buf = new Uint8Array(
+          await new Response(init!.body).arrayBuffer()
+        );
+        seen.push(Array.from(buf));
+        return new Response('ok');
+      });
+      const events: {
+        percent: number;
+        transferred: number;
+        total: number;
+      }[] = [];
+      const config = withProgress({
+        wrapBody: true,
+        onUploadProgress: (p) => events.push({ ...p }),
+      });
+
+      const wrappedFetch = config.middleware(
+        mockFetch as any,
+        { url: '/test', method: 'POST' } as any
+      );
+      await wrappedFetch('https://example.com', {
+        method: 'POST',
+        body: blob,
+      });
+
+      expect(seen).toEqual([[1, 2, 3, 4, 5]]);
+      expect(events.length).toBeGreaterThan(0);
+      const last = events[events.length - 1]!;
+      expect(last.total).toBe(5);
+      expect(last.transferred).toBe(5);
+      expect(last.percent).toBe(1);
+      expect(
+        new Headers(mockFetch.mock.calls[0]![1].headers).get('Content-Type')
+      ).toBeNull();
+      expect(mockFetch.mock.calls[0]![1].duplex).toBe('half');
+    });
+
+    it('withProgress wrapBody should keep using the stream path for a ReadableStream body', async () => {
+      vi.useRealTimers();
+      const enc = new TextEncoder();
+      const upload = new ReadableStream<Uint8Array>({
+        start(c) {
+          c.enqueue(enc.encode('abc'));
+          c.close();
+        },
+      });
+      const mockFetch = vi
+        .fn()
+        .mockImplementation((_input, init) => new Response(init!.body));
+      const events: {
+        percent: number;
+        transferred: number;
+        total: number;
+      }[] = [];
+      const config = withProgress({
+        wrapBody: true,
+        onUploadProgress: (p) => events.push({ ...p }),
+      });
+
+      const wrappedFetch = config.middleware(
+        mockFetch as any,
+        { url: '/test', method: 'POST' } as any
+      );
+      const res = await wrappedFetch('https://example.com', {
+        method: 'POST',
+        body: upload,
+      });
+
+      expect(await res.text()).toBe('abc');
+      expect(events.map((e) => e.transferred)).toEqual([3]);
+      // Stream length stays unknown even with wrapBody enabled.
+      expect(events.every((e) => e.total === 0 && e.percent === 0)).toBe(true);
+      // fetch received a wrapped stream, not the original one.
+      expect(mockFetch.mock.calls[0]![1].body).not.toBe(upload);
+    });
+
+    it('withProgress wrapBody false should pass a string body through untouched', async () => {
+      const onUploadProgress = vi.fn();
+      const mockFetch = vi.fn().mockResolvedValue(new Response('ok'));
+      const config = withProgress({ wrapBody: false, onUploadProgress });
+
+      const wrappedFetch = config.middleware(
+        mockFetch as any,
+        { url: '/test', method: 'POST' } as any
+      );
+      await wrappedFetch('https://example.com', {
+        method: 'POST',
+        body: 'plain',
+      });
+
+      const init = mockFetch.mock.calls[0]![1];
+      expect(init.body).toBe('plain');
+      expect(init.duplex).toBeUndefined();
+      expect(onUploadProgress).not.toHaveBeenCalled();
+    });
+
+    it('withProgress wrapBody should not wrap a FormData body', async () => {
+      const form = new FormData();
+      form.append('key', 'value');
+      const onUploadProgress = vi.fn();
+      const mockFetch = vi.fn().mockResolvedValue(new Response('ok'));
+      const config = withProgress({ wrapBody: true, onUploadProgress });
+
+      const wrappedFetch = config.middleware(
+        mockFetch as any,
+        { url: '/test', method: 'POST' } as any
+      );
+      await wrappedFetch('https://example.com', {
+        method: 'POST',
+        body: form,
+      });
+
+      const init = mockFetch.mock.calls[0]![1];
+      expect(init.body).toBe(form);
+      expect(init.duplex).toBeUndefined();
+      expect(onUploadProgress).not.toHaveBeenCalled();
+    });
   });
 
   describe('use with MiddlewareConfig', () => {

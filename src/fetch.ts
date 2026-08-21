@@ -1,7 +1,14 @@
 import { json } from './config';
+import { mapErrorSymbol } from './constants';
 import { HTTPError, NetworkError } from './errors';
 import { sortMiddlewares } from './middleware';
-import type { Fetchable, Pipe, ReaderData, ResolveData } from './types';
+import type {
+  Fetchable,
+  MapErrorContext,
+  Pipe,
+  ReaderData,
+  ResolveData,
+} from './types';
 import { getData, hasData, applyTimeout, applyTotalTimeout } from './util';
 
 /**
@@ -22,6 +29,10 @@ function isAbsoluteUrl(url: string): boolean {
  *
  * - No `baseUrl` → `url` is used as-is.
  * - Absolute `url` (own protocol, e.g. `https://…`) → `baseUrl` is ignored.
+ * - Protocol-relative `url` (e.g. `//cdn.example.com/x`) also bypasses
+ *   `baseUrl`: it inherits the caller's protocol and is passed through
+ *   untouched (`new URL` cannot parse it standalone, so it must be
+ *   checked before the relative-path branch strips its leading slashes).
  * - Otherwise trailing slashes on `baseUrl` and leading slashes on `url`
  *   are collapsed to a single `/` separator, so neither a double slash nor
  *   a missing slash can occur.
@@ -31,6 +42,8 @@ function isAbsoluteUrl(url: string): boolean {
  */
 function joinUrl(baseUrl: string | undefined, url: string): string {
   if (!baseUrl) return url;
+  // Protocol-relative URLs bypass baseUrl — they are not relative paths.
+  if (url.startsWith('//')) return url;
   if (isAbsoluteUrl(url)) return url;
   return `${baseUrl.replace(/\/+$/, '')}/${url.replace(/^\/+/, '')}`;
 }
@@ -238,7 +251,12 @@ function bestEffortRequest(o: Fetchable): Request | undefined {
  * Use `getData()` to retrieve the parsed data from the response.
  *
  * Throws an {@link HTTPError} when the response has a non-2xx status
- * (`!response.ok`). If a data reader middleware already parsed the error
+ * (`!response.ok`). Opaque responses from `no-cors` requests are the
+ * exception: they report `status: 0` / `ok: false` yet are not errors,
+ * so they do not throw — any problem reading the opaque body surfaces
+ * naturally from the reader instead. For `no-cors` requests consider the
+ * raw `fetch()` escape hatch to inspect the response yourself.
+ * If a data reader middleware already parsed the error
  * body, the parsed value is attached to `error.data`. To opt out and
  * handle statuses yourself, use `fetch()` and inspect the raw `Response`.
  * Network-level failures (fetch rejecting with a `TypeError`) surface as
@@ -248,6 +266,11 @@ function bestEffortRequest(o: Fetchable): Request | undefined {
  * (e.g. `pipe(data, reader)`, `pipe(json)`, or converged by
  * `pipe(validate, schema)`); without a reader it resolves to `unknown`.
  * An explicit type argument still wins when provided.
+ *
+ * When `mapError()` attached an error mapper, it runs here as the last
+ * hop: the mapper's return value (awaited when async) is thrown instead
+ * of the original error, whatever its type. The raw `fetch()` escape
+ * hatch bypasses the mapper entirely.
  *
  * @template T - Optional override for the resolved data type
  * @template O - The fetchable configuration type (inferred)
@@ -267,14 +290,29 @@ function bestEffortRequest(o: Fetchable): Request | undefined {
 export async function fetchData<T = never, O extends Fetchable = Fetchable>(
   o: O
 ): Promise<ResolveData<T, O>> {
-  const res = await fetch(o);
-  if (!res.ok) {
-    const err = new HTTPError(res, bestEffortRequest(o));
-    // Attach the parsed error body when a data reader middleware stored it.
-    err.data = hasData(res) ? getData(res) : undefined;
-    throw err;
+  try {
+    const res = await fetch(o);
+    // Opaque responses (no-cors) report status 0 / ok:false without being
+    // errors — matching ky 2.0 semantics, they do not throw; any failure
+    // to read the opaque body surfaces naturally from the reader instead.
+    if (!res.ok && res.type !== 'opaque') {
+      const err = new HTTPError(res, bestEffortRequest(o));
+      // Attach the parsed error body when a data reader middleware stored it.
+      err.data = hasData(res) ? getData(res) : undefined;
+      throw err;
+    }
+    return getData<ReaderData<O>>(res) as ResolveData<T, O>;
+  } catch (e) {
+    const mapper = o[mapErrorSymbol];
+    if (!mapper) throw e;
+    // Only HTTPError can contribute response/request context; every other
+    // error type (network, timeout, validation, user middleware) gets {}.
+    const ctx: MapErrorContext =
+      e instanceof HTTPError
+        ? { response: e.response, request: e.request }
+        : {};
+    throw await mapper(e, ctx);
   }
-  return getData<ReaderData<O>>(res) as ResolveData<T, O>;
 }
 
 /**

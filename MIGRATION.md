@@ -1,6 +1,6 @@
 # Migration Guide
 
-How to upgrade between fetch-fun releases. Each section covers one version step and is organized into **Breaking changes** (with copy-paste fixes), **Behavior changes** (observable, but usually requiring no action), and **Additive** changes, followed by a migration checklist.
+How to upgrade between fetch-fun releases. Each section covers one version step and is organized into **Breaking changes** (with copy-paste fixes), **Behavior changes** (observable, but usually requiring no action), and **Additive** changes, followed by a migration checklist. Coming from ky? The [last section](#migrating-from-ky) maps ky 2.0 concepts to fetch-fun.
 
 ## v0.3 → v0.4
 
@@ -222,9 +222,11 @@ import { fetch } from 'fetch-fun/dist/index.mjs'; // deep import, new path
 
 ### Behavior changes
 
-- **URL joining is slash-normalized.** Trailing slashes on `baseUrl` and leading slashes on `url` collapse into a single `/`, and an absolute `url` (own protocol) bypasses `baseUrl` entirely. 0.4.x concatenated the two strings verbatim.
+- **URL joining is slash-normalized.** Trailing slashes on `baseUrl` and leading slashes on `url` collapse into a single `/`, and an absolute `url` (own protocol) bypasses `baseUrl` entirely. 0.4.x concatenated the two strings verbatim. `../` segments in the path are preserved as-is — the join is textual splicing, not URL resolution, so the server receives the dot segments.
+- **Protocol-relative URLs bypass `baseUrl`.** A `url` starting with `//` now passes through untouched, inheriting the caller's protocol. 0.4.x silently concatenated it onto the `baseUrl` prefix, sending the request to a path under the base instead of the intended host.
 - **Middleware misconfiguration now throws.** Duplicate middleware names and dependency cycles throw with a named message. 0.4.x silently overwrote duplicate names and fell back to pipe order on cycles (with a `console.warn`).
 - **`fetch()` returns the real `Response`.** Reader middlewares (`json`, `text`, `blob`, `data`) store parsed data in a WeakMap instead of returning a spread copy of the response — in 0.4.x, once a reader ran, the value from `fetch()` lost the `Response` prototype (`.status`, `.headers`, `.body` read as `undefined`). `getData(res)` works exactly as before.
+- **Opaque (`no-cors`) responses no longer throw `HTTPError`.** A response with `type: 'opaque'` (status `0`) resolves from `fetchData` / `fetchJSON` like any other response — matching ky 2.0 — instead of rejecting with an uninformative `HTTPError`; any problem reading the opaque body surfaces from the reader itself.
 - **`Retry-After` is honored and capped.** A parseable, non-past `Retry-After` header (integer seconds or HTTP-date) overrides the backoff delay, clamped to `maxRetryAfter` (default `30000` ms) — the retry still happens, just sooner than the server demanded.
 - **Discarded retry responses release their bodies** (`res.body.cancel()`) before the wait, avoiding connection leaks.
 - **Wider inputs, same storage.** `headers()` / `header()` accept `Headers` instances and `[name, value][]` tuples (normalized to plain records), and `body()` accepts any `BodyInit | null` (0.4.x: strings only). All backward compatible.
@@ -241,6 +243,8 @@ import { fetch } from 'fetch-fun/dist/index.mjs'; // deep import, new path
 - Response readers: `arrayBuffer(o)` and `formData(o)` join `json` / `text` / `blob`; `json(o, parseJson?)` accepts a custom parser (e.g. a `JSON.parse` reviver reviving `Date`s) whose return type flows into `fetchData` inference.
 - `withAuth(credentials, type = 'Bearer')` — the middleware now supports any auth scheme (`'Basic' | 'Bearer' | 'Digest' | string`), matching the `auth(o, type, credentials)` config function; single-argument calls stay Bearer.
 - Bundle guardrails in CI: `size-limit` (full client ≈ 5 kB min+gzip; a `create` + `url` + `fetchJSON` + `json` app ≈ 2 kB) and a tree-shaking verification script asserting `withRetry` / `withAuth` / `withLogging` / `withProgress` code is dropped when unused (`npm run size`, `npm run verify:tree-shaking`).
+- `mapError(o, mapper)` — map any rejection right before it escapes `fetchData` / `fetchJSON` (ky's `beforeError` hook): the mapper receives `(error, ctx)` where `ctx` carries `{ response, request }` for `HTTPError`s and `{}` otherwise, and its — possibly async — return value becomes the rejection reason. A later pipe overwrites an earlier mapper, `retry` always sees the original error, and raw `fetch()` bypasses it entirely.
+- `withProgress({ wrapBody: true })` — wrap string / `Blob` / `ArrayBuffer` / `ArrayBufferView` / `URLSearchParams` request bodies into a counting stream so `onUploadProgress` fires for them too, with `total` set to the body's real byte size (making `percent` meaningful); the implicit `Content-Type` those shapes lose when streamed is restored, and `duplex: 'half'` is set automatically. `FormData` and `ReadableStream` bodies are unaffected.
 
 ### Migrate
 
@@ -251,3 +255,232 @@ import { fetch } from 'fetch-fun/dist/index.mjs'; // deep import, new path
 - [ ] Custom `fetch` mocks / middlewares: read headers via `new Headers(init.headers).get(...)`.
 - [ ] Read `.timeoutMs` (not `.signal`) off options piped through `timeout`.
 - [ ] Update any direct `dist/...` import paths.
+
+## Migrating from ky
+
+fetch-fun is not a drop-in ky replacement: where ky configures an instance with options and lifecycle hooks, fetch-fun composes plain pipeable functions over an options object. The feature sets overlap heavily, though, and most ky code translates mechanically. The table below maps ky 2.0 concepts to their fetch-fun equivalents; where ky 1.x named an option differently (`prefixUrl`), that is called out too.
+
+### Concept map
+
+| ky 2.0 | fetch-fun | Notes |
+| --- | --- | --- |
+| `ky.create(defaults)` | `create(o)` | Fresh client from a defaults object. |
+| `ky.extend(defaults)` | `client.pipe(...)` | Derives a new client inheriting everything; pipes are immutable, so the parent is never mutated. Merge rules differ per pipe: `query` / `headers` replace, `mergeQuery` / `header` merge. ky's `extend` deep-merges options and appends hooks; its `replaceOption` escape hatch is unnecessary here — pick the replacing pipe explicitly. |
+| `prefixUrl` (1.x) / `prefix` (2.0) | `baseUrl` | Splice semantics match: trailing / leading slashes collapse at the join, leading-slash inputs included. |
+| `baseUrl` (2.0) | `baseUrl` | Different algorithm: ky *resolves* the input as a relative URL (`'/users'` against `https://x/api/` → `https://x/users`); fetch-fun always *splices* (`'/users'` → `https://x/api/users`). |
+| `json` (request option) | `jsonBody(o, data)` | Or the method sugar: `post(o, '/users', payload)` sets method, URL, and JSON body in one step. |
+| `searchParams` | `query` / `mergeQuery` / `querySet` / `queryAppend` | `query` replaces, `mergeQuery` merges; values accept `string \| number \| boolean`. |
+| `retry.limit` | `retry(o, maxRetries)` | **Default gap: ky retries twice out of the box; fetch-fun never retries unless `retry` is piped.** |
+| `retry.methods` | `RetryOptions.methods` | Both default to idempotent methods; ky additionally lists `QUERY`. |
+| `retry.statusCodes` | `RetryOptions.statuses` | ky defaults to `408 413 429 500 502 503 504`; fetch-fun to `408 425 429 500 502 503 504` — `425` instead of `413` (`413` is never retried in fetch-fun). |
+| `retry.delay` + `retry.backoffLimit` | `RetryOptions.delay` | ky: a `delay(attemptCount)` function, default `0.3 · 2^(n−1) · 1000` ms, jitter opt-in. fetch-fun: `{ initial: 1000, max: 10000, multiplier: 2 }` with ±25% jitter always applied. |
+| `retry.afterStatusCodes` + `retry.maxRetryAfter` | `respectRetryAfter` + `maxRetryAfter` | ky honors `Retry-After` (plus rate-limit headers) only for `afterStatusCodes` (`413 429 503`) and defaults its cap to `Infinity`. fetch-fun honors `Retry-After` (seconds or HTTP-date) on any retry and defaults the cap to `30000` ms. |
+| `retry.retryOnTimeout` | — | Timeouts are ordinary retryable rejections in fetch-fun — there is no separate switch (opt out via `shouldRetry`). ky defaults to *not* retrying timeouts. |
+| `retry.shouldRetry` | `RetryOptions.shouldRetry` | Both replace the built-in retry decisions; fetch-fun's hard rules still apply first (method gate, `maxRetries` budget, `ValidationError` never retried). |
+| `hooks.init` | any pipe | Every config function already receives the options object — writing one *is* the init hook. |
+| `hooks.beforeRequest` | middleware via `use` | A middleware wraps `(input, init)` before fetch: rewrite URL / headers, or return a `Response` yourself to short-circuit (ky's mock / cache pattern). |
+| `hooks.afterResponse` | `mapResponse(o, mapper)` or a middleware | Inspect or replace the `Response`. ky's `ky.retry(...)` force-retry maps to a `shouldRetry` predicate. |
+| `hooks.beforeRetry` | `createRetryBase(beforeRetry)` | Fully custom retry loop: `(attempt, error, o) => Promise<void>`; reject to stop (ky's `ky.stop` symbol becomes a plain rejection). |
+| `hooks.beforeError` | `mapError(o, mapper)` | Transform any rejection right before it escapes `fetchData` / `fetchJSON`; the return value is what callers catch. |
+| `timeout` (default `10000`, `false` disables) | `timeout(o, ms)` (no default) | Both are per-attempt — a fresh budget on every retry. **Default gap: every ky request carries an implicit 10 s timeout; with fetch-fun nothing times out until you pipe it** (and "disabling" simply means not piping it). |
+| `totalTimeout` | `totalTimeout(o, ms)` | Same shape: one budget over all attempts and backoff waits; rejects with `TimeoutError` when exceeded. |
+| `throwHttpErrors: false` | `fetch(o)` | The executor resolves the `Response` for any status — check `res.ok` yourself. |
+| `parseJson` | `json(o, parseJson)` | Custom response-JSON parser (bourne, `JSON.parse` revivers, …); its return type flows into `fetchData`'s inference. |
+| `stringifyJson` | `body(o, str)` + `contentType(o, 'application/json')` | `jsonBody` always uses `JSON.stringify` — serialize yourself when you need a custom stringifier. |
+| `.json(schema)` → `SchemaValidationError` | `pipe(validate, schema)` → `ValidationError` | Both take any Standard Schema v1 schema (Zod / Valibot / ArkType) with zero adapters. |
+| `onDownloadProgress` | `withProgress({ onDownloadProgress })` | Same per-chunk `{ percent, transferred, total }` shape (ky spells the fields `transferredBytes` / `totalBytes`). |
+| `onUploadProgress` | `withProgress({ onUploadProgress, wrapBody: true })` | fetch-fun counts `ReadableStream` bodies natively (`total: 0` — unknown length) and wraps string / `Blob` / `ArrayBuffer` / view / `URLSearchParams` bodies when `wrapBody: true`, giving a real byte `total`, restoring the implicit `Content-Type`, and setting `duplex: 'half'` automatically. |
+| `fetch` option | `create({ fetch: myFetch })` | Custom fetch implementation (SSR wrappers, instrumentation, test doubles). |
+| `HTTPError` / `TimeoutError` / `NetworkError` | same names | Field-level differences: fetch-fun's `HTTPError` carries `.response` / `.request` / `.data`; `SchemaValidationError` maps to `ValidationError`. |
+| Node.js 22+ | Node.js >= 20.3 | fetch-fun only needs `AbortSignal.any` and `AbortSignal.timeout`. |
+
+### Instances and base URL
+
+```typescript
+// ky 2.0: instances with defaults; extend() inherits and deep-merges
+const api = ky.create({
+  baseUrl: 'https://api.example.com',
+  headers: { accept: 'application/json' },
+});
+const usersApi = api.extend({ prefix: '/users' });
+
+// fetch-fun: create() + pipes; derived clients inherit immutably
+const api = ff
+  .create({ baseUrl: 'https://api.example.com' })
+  .pipe(ff.accept, 'application/json');
+const usersApi = api.pipe(ff.baseUrl, 'https://api.example.com/users'); // api itself unchanged
+```
+
+Three URL cases worth knowing when moving off `prefixUrl` / `prefix`:
+
+```typescript
+client.pipe(ff.url, 'users');  // https://api.example.com/users — slash-normalized splice
+client.pipe(ff.url, '/users'); // https://api.example.com/users — same result
+client.pipe(ff.url, 'https://other.example.com/x'); // bypasses baseUrl entirely
+```
+
+- An absolute `url` (own protocol) bypasses `baseUrl` in both libraries.
+- A protocol-relative `url` (`//cdn.example.com/x`) passes through untouched, inheriting the page's protocol — ky 2.0 instead resolves it against its `baseUrl`.
+- `../` segments are preserved verbatim: the join splices strings, it does not resolve URLs.
+
+### Hooks → middlewares and `mapError`
+
+Hooks become middlewares — functions `(fetchFn, options) => fetchFn`, added with `use` — and `beforeError` becomes `mapError`:
+
+```typescript
+// ky: mutate the outgoing request before it is sent
+const api = ky.extend({
+  hooks: {
+    beforeRequest: [
+      ({ request }) => request.headers.set('Authorization', `token ${token()}`),
+    ],
+  },
+});
+
+// fetch-fun: a middleware wraps the fetch function (or use the built-in factory)
+client.pipe(ff.use, ff.withAuth(token()));
+```
+
+```typescript
+// ky: reshape errors right before they are thrown
+const api = ky.extend({
+  hooks: {
+    beforeError: [({ error }) => toApiError(error)],
+  },
+});
+
+// fetch-fun: the mapper's return value is the rejection reason
+client.pipe(ff.mapError, (e, ctx) =>
+  e instanceof ff.HTTPError && ctx.response
+    ? new ApiError(e.response.status, e.data)
+    : e
+);
+```
+
+`mapError` context carries `{ response, request }` only when the error is an `HTTPError` (`{}` otherwise); the mapper may be async, a later pipe overwrites an earlier one, and `retry` always sees the original error — only `fetchData` / `fetchJSON` rejections pass through it.
+
+### Status handling and typed errors
+
+```typescript
+// ky: resolve error responses instead of throwing
+const res = await ky.get('/maybe-missing', { throwHttpErrors: false });
+if (res.ok) { /* ... */ }
+
+// fetch-fun: the fetch() executor never throws on status
+const res = await client.pipe(ff.url, '/maybe-missing').pipe(ff.fetch);
+if (res.ok) { /* ... */ }
+```
+
+The typed-error classes keep their names, so `instanceof` chains port directly — with `SchemaValidationError` renamed to `ValidationError`:
+
+```typescript
+} catch (e) {
+  if (e instanceof ff.HTTPError) { /* e.response, e.request, e.data */ }
+  else if (e instanceof ff.NetworkError) { /* e.url, e.cause */ }
+  else if (e instanceof ff.TimeoutError) { /* e.cause */ }
+  else if (e instanceof ff.ValidationError) { /* e.issues, e.data */ }
+}
+```
+
+### JSON: bodies, parsing, and schemas
+
+```typescript
+// ky: JSON body + custom response parser + schema validation
+const user = await ky
+  .post('/users', { json: { name: 'Alice' }, parseJson: reviveDates })
+  .json(UserSchema);
+
+// fetch-fun
+const user = await client
+  .pipe(ff.post, '/users', { name: 'Alice' }) // method + URL + JSON body + Content-Type
+  .pipe(ff.json, reviveDates)                 // custom response parser
+  .pipe(ff.validate, UserSchema)              // Standard Schema validation
+  .pipe(ff.fetchData);                        // Promise<schema output>
+```
+
+A custom request serializer has no dedicated option — serialize yourself and set the raw body:
+
+```typescript
+// ky: stringifyJson
+await ky.post('/users', { json: data, stringifyJson: myStringify });
+
+// fetch-fun: serialize, then body + contentType
+await client
+  .pipe(ff.url, '/users')
+  .pipe(ff.method, 'POST')
+  .pipe(ff.body, myStringify(data))
+  .pipe(ff.contentType, 'application/json')
+  .pipe(ff.fetch);
+```
+
+### Progress
+
+```typescript
+// ky: upload progress for a string/Blob body
+const res = await ky.post('/upload', {
+  body: blob,
+  onUploadProgress: (p) => console.log(`${p.percent * 100}%`),
+});
+
+// fetch-fun: wrapBody makes non-stream bodies countable
+const res = await client
+  .pipe(ff.use, ff.withProgress({
+    onUploadProgress: ({ percent, transferred, total }) =>
+      console.log(`${(percent * 100).toFixed(1)}% of ${total}`),
+    wrapBody: true,
+  }))
+  .pipe(ff.post, '/upload')
+  .pipe(ff.body, blob)
+  .pipe(ff.fetch);
+```
+
+Downloads work the same way — `onDownloadProgress` fires per chunk as you consume `res.body` (e.g. via `res.blob()`); without a `Content-Length`, `total` stays `0` and `percent` stays `0` while `transferred` still counts bytes.
+
+### Putting it together
+
+A representative request — retry, timeouts, JSON, and query params — before and after:
+
+```typescript
+// ── ky 2.0 ──────────────────────────────────────────────
+import ky from 'ky';
+
+const api = ky.create({
+  baseUrl: 'https://api.example.com',
+  timeout: 5000,
+  retry: { limit: 2, statusCodes: [429, 500, 502, 503, 504] },
+  hooks: { beforeError: [({ error }) => toApiError(error)] },
+});
+
+const users = await api
+  .get('users', { searchParams: { page: 1, limit: 20 } })
+  .json<User[]>();
+```
+
+```typescript
+// ── fetch-fun ───────────────────────────────────────────
+import * as ff from 'fetch-fun';
+
+const api = ff
+  .create({ baseUrl: 'https://api.example.com' })
+  .pipe(ff.timeout, 5000)                                    // per attempt
+  .pipe(ff.retry, 2, { statuses: [429, 500, 502, 503, 504] })
+  .pipe(ff.mapError, (e) => toApiError(e));                  // beforeError
+
+const users = await api
+  .pipe(ff.url, '/users')
+  .pipe(ff.mergeQuery, { page: 1, limit: 20 })
+  .pipe(ff.fetchJSON<User[]>);
+```
+
+Behavioral deltas to re-check after porting:
+
+- ky's implicit 10 s per-attempt timeout disappears unless `timeout` is piped (here it is explicit anyway).
+- ky retries every request twice by default; fetch-fun retries only where `retry` is piped (also explicit here).
+- ky does not retry timeouts by default (`retryOnTimeout: false`); fetch-fun does.
+- ky honors `Retry-After` with no cap by default (`maxRetryAfter: Infinity`); fetch-fun clamps honored waits to 30 s.
+- `fetchJSON` throws `HTTPError` on non-2xx just like ky's `.json()` — but `fetch()` never does.
+
+### What has no ky equivalent
+
+- **Declarative middleware positioning.** Middlewares carry names and positioning constraints — `client.pipe(ff.use, { name: 'trace', outer: ff.NORMAL, middleware })` — resolved by a topological sort at execution time: `outer: X` wraps `X`, `inner: X` is wrapped by it, and `NORMAL` anchors the default group; duplicate names and cycles throw. ky hooks run in registration order within each category, with no way to interleave categories.
+- **Tree-shaking, enforced.** Every helper is an independent named export over zero dependencies: importing `url` + `fetchJSON` never pulls `retry` / `progress` / `validate` code into the bundle. CI asserts it (`npm run size`, `npm run verify:tree-shaking`) — a minimal app stays ≈2 kB min+gzip, the full client ≈5 kB. ky ships behind a single factory entry, so retry, hooks, and progress ride along with every import.

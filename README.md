@@ -18,10 +18,11 @@ A functional fetch toolkit built on one composition protocol: **any function of 
 | Type inference | Reader return type flows into `fetchData`; `pipe(validate, schema)` converges to the schema's Standard Schema output; query keys tracked at type level | Generics at call sites; schema output via `.json(schema)` | Generics at call sites | Generics on the chain | Schema output type drives the response type |
 | Error semantics | `fetch` never throws on non-2xx; `fetchData`/`fetchJSON` throw `HTTPError` (`.response`/`.request`/`.data`); typed `TimeoutError`, `NetworkError`, `ValidationError` | Always throws on non-2xx | `FetchError` (`error.data`) + `onResponseError` interceptors | Errors surfaced to `.error()` handlers | Throws `ResponseError` on non-2xx (`reject` opt-out → error-as-value); `ResponseValidationError` on schema failure |
 | Network errors | Transport `TypeError`s wrapped as typed `NetworkError` (`url?`, original as `cause`); user middleware errors untouched; still retryable | Wrapped in `NetworkError` | Wrapped in `FetchError` | Native errors | No typed wrapper documented |
+| Error transformation | `mapError(o, mapper)` — one last-hop mapper through which **every** error type passes; the mapper's return value is what gets thrown | `beforeError` hooks | `onResponseError` interceptors | `.error()` handlers | `parseRejected` |
 | Schema validation | Built-in, Standard Schema v1 (Zod/Valibot/ArkType, duck-typed, zero adapters) | Built-in, Standard Schema (`.json(schema)` throws `SchemaValidationError`) | Bring your own via interceptors | Bring your own via middlewares | Built-in, Standard Schema (Zod/Valibot/ArkType) |
 | Retry policy | Method-aware (idempotency), status-aware, exp. backoff + jitter, per-attempt timeout; `Retry-After` honored **and capped** (`maxRetryAfter`); `shouldRetry` predicate for response/error-driven decisions | Status/method filter, backoff, `Retry-After` for 413/429/503 | Retry count/delay + status filter | Bring-your-own retry middleware | `retry: { attempts, delay, when }` — attempts/delay may be functions of the request/attempt |
 | Total timeout | `totalTimeout(ms)` — whole-request budget spanning all retries + backoff; lazy; composes with per-attempt `timeout` | `totalTimeout` option | — | — | — |
-| Progress | Built-in `withProgress`: per-chunk download progress (`percent`/`transferred`/`total`), upload progress for `ReadableStream` bodies | `onDownloadProgress` / `onUploadProgress` | — | Progress addon | Upload + download via `onRequestStreaming`/`onResponseStreaming` |
+| Progress | Built-in `withProgress`: per-chunk download progress (`percent`/`transferred`/`total`), upload progress for `ReadableStream` bodies — or for any other body shape via opt-in `wrapBody` (real `total`, so `percent` works) | `onDownloadProgress` / `onUploadProgress` | — | Progress addon | Upload + download via `onRequestStreaming`/`onResponseStreaming` |
 | Tree-shaking | 0 deps + `sideEffects: false` + every helper an independent named export — bundlers keep only what you import (`url` + `fetchJSON` never pull in `retry`/`progress`/`validate`; full client ≈ 5 kB min+gzip, a `create`+`url`+`fetchJSON`+`json` app ≈ 2 kB — enforced by CI) | Single factory entry — retry, hooks, and progress ship with every import | `$fetch` wrapper + bundled utilities — one unit, little to shake | Core + addons — unused addons stay out of the bundle | One `up()` builder — the whole client ships as a unit |
 | Dependencies | **0** | 0 | Small bundled utility set | 0 | 0 |
 | Node.js baseline | `>= 20.3` — only requires `AbortSignal.any` / `AbortSignal.timeout` | `22+` (v2) | cross-runtime (v1, via `node-fetch-native`) | `22+` (v3) | modern browsers + Node |
@@ -39,6 +40,7 @@ A functional fetch toolkit built on one composition protocol: **any function of 
   - [validate — Standard Schema validation](#validate--standard-schema-validation)
 - [Executors: fetch / fetchData / fetchJSON](#executors-fetch--fetchdata--fetchjson)
 - [Errors](#errors)
+  - [mapError — last-hop error transformation](#maperror--last-hop-error-transformation)
 - [Middleware and the Positioning System](#middleware-and-the-positioning-system)
 - [Type Inference](#type-inference)
 - [OpenAPI-typed clients](docs/openapi.md)
@@ -171,6 +173,7 @@ Every config function has the shape `(o, ...args) => o'` — it takes the curren
 | `retry(o, maxRetries, opts?)` | Add the smart retry middleware | `maxRetries`, [`RetryOptions`](#retry--decision-matrix) |
 | `mapResponse(o, mapper)` | Add a middleware mapping `(res, options) => Response` | `mapper` |
 | `checkError(o, check)` | Add a middleware that inspects `res` and may throw | `check: (res) => void \| Promise<void>` |
+| `mapError(o, mapper)` | Add a last-hop error mapper — its return value is what `fetchData`/`fetchJSON` throw (see [Errors](#maperror--last-hop-error-transformation)) | `mapper: (e: unknown, ctx: MapErrorContext) => unknown` |
 | `data(o, reader)` | Add a response reader; its return value becomes the request's data | `reader: (res) => unknown` |
 | `json(o, parseJson?)` | Reader: parse the response body as JSON (does **not** touch request headers); an empty body (`204`/`205`/`HEAD`, …) resolves `undefined` — `parseJson` is never called for empty bodies | `parseJson?: (raw: string) => unknown` — custom parser, e.g. `JSON.parse` with a reviver to revive `Date`s; its return type flows into `fetchData`'s inference |
 | `text(o)` | Reader: read the body as text | — |
@@ -183,7 +186,7 @@ Every config function has the shape `(o, ...args) => o'` — it takes the curren
 
 Notes:
 
-- URL building: `baseUrl` trailing slashes and `url` leading slashes collapse into a single `/`; an absolute `url` (own protocol) bypasses `baseUrl` entirely. `searchParams` are appended with `?` or `&` as needed. A `baseUrl` carrying its own query string is not supported — use `query`/`mergeQuery`.
+- URL building: `baseUrl` trailing slashes and `url` leading slashes collapse into a single `/`; an absolute `url` (own protocol) bypasses `baseUrl` entirely, and so does a protocol-relative `url` (`//cdn.example.com/x`) — it inherits the caller's protocol and is passed through untouched. `../` segments are kept verbatim in the join: there is no client-side URL resolution, the server sees and resolves them. `searchParams` are appended with `?` or `&` as needed. A `baseUrl` carrying its own query string is not supported — use `query`/`mergeQuery`.
 - `query` accepts anything the `URLSearchParams` constructor accepts, with `number`/`boolean` values stringified along the way (`{ page: 1 }` → `?page=1`). For nested/array serialization, serialize first with your preferred library (`qs`, `query-string`) and pass the string.
 - `json()` only configures **response** parsing; it no longer sets a request `Content-Type`. To send JSON use `jsonBody`, or set headers explicitly with `contentType`/`header`.
 
@@ -323,6 +326,8 @@ try {
 
 All executors require `url` to be set (`Fetchable`). A custom `fetch` implementation can be injected via the `fetch` option (`create({ fetch: myFetch })`).
 
+One `no-cors` caveat: such requests resolve to opaque responses (`type: 'opaque'`, `status: 0`, `ok: false`). `fetchData`/`fetchJSON` deliberately do **not** throw `HTTPError` for them (matching ky 2.0) — the response is handed to your reader, and any failure to read the by-design-unreadable opaque body surfaces naturally from the reader instead. For `no-cors` requests, consider the raw `fetch()` escape hatch and inspect the response yourself.
+
 ## Errors
 
 All four classes extend `Error` and are exported from the package root.
@@ -348,6 +353,34 @@ try {
   else if (e instanceof ff.ValidationError) { /* schema failed: e.issues, e.data */ }
 }
 ```
+
+### mapError — last-hop error transformation
+
+`mapError(o, mapper)` attaches an error mapper that runs as the very last hop before `fetchData`/`fetchJSON` throw to your code — the counterpart of ky's `beforeError` and up-fetch's `parseRejected`:
+
+```typescript
+class NotFoundError extends Error {
+  constructor(readonly response: Response, cause: unknown) {
+    super(`Not found: ${response.url}`, { cause });
+  }
+}
+
+const user = await client
+  .pipe(ff.url, '/users/42')
+  .pipe(ff.mapError, (e, ctx) =>
+    ctx.response?.status === 404 ? new NotFoundError(ctx.response, e) : e,
+  )
+  .pipe(ff.fetchJSON);
+```
+
+The mapper has the shape `(e: unknown, ctx: MapErrorContext) => unknown`, where `MapErrorContext` (`{ response?: Response; request?: Request }`) is populated only when the error is an `HTTPError` — the failed `response` plus the best-effort reconstructed `request`; every other error type (network, timeout, validation, user middleware) gets `{}`.
+
+Key semantics:
+
+- **Every error type passes through** — `HTTPError`, `NetworkError`, `TimeoutError`, `ValidationError`, and errors thrown by user middlewares alike. The mapper's return value is thrown as-is; async mappers are awaited.
+- **`retry` sees the original error** — the mapper runs after the whole middleware chain (including retry) has settled, so retry decisions are made on the unmapped error; only the finally thrown value is mapped.
+- **Piping `mapError` again replaces** the previous mapper — the same overwrite semantics as `timeout`.
+- **Only `fetchData`/`fetchJSON` map** — the raw `fetch()` escape hatch bypasses the mapper entirely and rejects with the original error.
 
 ## Middleware and the Positioning System
 
@@ -418,7 +451,7 @@ const res = await client
 await res.blob(); // reading the body drives the callbacks
 ```
 
-Null-body responses (`204`/`205`/`HEAD`, …) are returned untouched and produce no callbacks. `onUploadProgress` fires only when the request `init.body` is a `ReadableStream` — every other body shape (string, `BufferSource`, `Blob`, `URLSearchParams`, `FormData`) passes through uncounted rather than being serialized just to count it; a stream's length is unknown, so `total` is `0` there. Native `fetch` requires `duplex: 'half'` for stream bodies, which callers set themselves.
+Null-body responses (`204`/`205`/`HEAD`, …) are returned untouched and produce no callbacks. `onUploadProgress` fires out of the box only when the request `init.body` is a `ReadableStream` — every other body shape passes through uncounted rather than being serialized just to count it; a stream's length is unknown, so `total` is `0` there. Opt in with `wrapBody: true` to observe the other shapes too: `string`, `Blob`, `ArrayBuffer`, `ArrayBufferView`, and `URLSearchParams` bodies are wrapped into a counting stream, so `total` becomes the body's real byte size and `percent` turns meaningful. Because a stream body loses the implicit `Content-Type` that native `fetch` would have set, the defaults for `string` (`text/plain;charset=UTF-8`) and `URLSearchParams` (`application/x-www-form-urlencoded;charset=UTF-8`) are restored — only when the request headers set no `Content-Type` explicitly — and `duplex: 'half'` is set automatically, never overriding a caller-provided value. `FormData` is never wrapped (it cannot be sized without serializing it), and a bare `ReadableStream` keeps the counting path above with `total: 0` — for it, native `fetch` requires `duplex: 'half'`, which callers set themselves.
 
 Ordering rules (applied by `sortMiddlewares`, a topological sort):
 
@@ -474,7 +507,7 @@ Grafting `openapi-typescript`'s generated `paths` types onto the pipe — typed 
 
 ## Recipes: data libraries, auth, testing
 
-Short, focused recipes — TanStack Query / SWR, 401 → refresh → retry, Nuxt / Vue, Next.js RSC, msw / vitest testing, and Zod 4 / Valibot validation — now live in [docs/recipes.md](docs/recipes.md).
+Short, focused recipes — TanStack Query / SWR, 401 → refresh → retry, Nuxt / Vue, Next.js RSC, msw / vitest testing, Zod 4 / Valibot validation, and streaming responses / Server-Sent Events — now live in [docs/recipes.md](docs/recipes.md).
 
 ## Utilities and Advanced API
 
@@ -491,7 +524,7 @@ Short, focused recipes — TanStack Query / SWR, 401 → refresh → retry, Nuxt
 | `createQuery(input)` | Typed `URLSearchParams` factory (object / tuple array / string) |
 | `NORMAL` | Symbol anchoring the default middleware position |
 
-Commonly used types: `Options`, `Fetchable`, `Client`, `Method`, `Pipe`, `MiddlewareFn`, `MiddlewareInput`, `MiddlewareConfig`, `MiddlewareName`, `QueryType`, `TypedURLSearchParams`, `StandardSchema`, `RetryOptions`, `ProgressOptions`, `ProgressState`, `NetworkError`.
+Commonly used types: `Options`, `Fetchable`, `Client`, `Method`, `Pipe`, `MiddlewareFn`, `MiddlewareInput`, `MiddlewareConfig`, `MiddlewareName`, `QueryType`, `TypedURLSearchParams`, `StandardSchema`, `RetryOptions`, `MapErrorContext`, `ProgressOptions`, `ProgressState`, `NetworkError`.
 
 ## Versioning
 
