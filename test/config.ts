@@ -30,6 +30,7 @@ import {
   jsonBody,
   signal,
   timeout,
+  totalTimeout,
   query,
   mergeQuery,
   querySet,
@@ -42,7 +43,7 @@ import {
   fetchJSON,
   fetch as doFetch,
   toFetchParams,
-} from '@/index';
+ TimeoutError } from '@/index';
 import type {
   MiddlewareFn,
   Options,
@@ -686,6 +687,166 @@ describe('config-build', function () {
 
   it('timeout: a later pipe overwrites the previous value', function () {
     timeout(timeout({}, 1000), 2000).should.be.eql({ timeoutMs: 2000 });
+  });
+
+  describe('totalTimeout', function () {
+    it('stores the whole-request budget', function () {
+      totalTimeout({}, 5000).should.be.eql({ totalTimeoutMs: 5000 });
+    });
+
+    it('a later pipe overwrites the previous value', function () {
+      totalTimeout(totalTimeout({}, 1000), 2000).should.be.eql({
+        totalTimeoutMs: 2000,
+      });
+    });
+
+    it('rejects with TimeoutError carrying the budget when the request hangs', async function () {
+      // AbortSignal.timeout runs on the native event loop — real timers and
+      // short real budgets (30ms) are required; fake timers never fire it.
+      const mockFetch = vi.fn().mockImplementation((_, init) => {
+        return new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => {
+            reject(init.signal!.reason);
+          });
+        });
+      });
+
+      const client = totalTimeout(
+        { url: 'https://x.y/api', fetch: mockFetch as any },
+        30
+      );
+
+      let caught: unknown;
+      try {
+        await doFetch(client);
+      } catch (e) {
+        caught = e;
+      }
+
+      expect(caught).toBeInstanceOf(TimeoutError);
+      expect((caught as TimeoutError).message).toBe(
+        'Request timed out after 30ms'
+      );
+      expect((caught as TimeoutError).cause).toBeInstanceOf(DOMException);
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('bounds a retry loop: the budget preempts further attempts', async function () {
+      // Core scenario: retry(2) with a hanging (>= 30ms) attempt would drag
+      // on through every attempt + backoff; the 40ms whole-request budget
+      // cuts it short with a TimeoutError.
+      let startedAttempts = 0;
+      const mockFetch = vi.fn().mockImplementation((_, init) => {
+        // Real fetch semantics: an already-aborted signal fails immediately.
+        if (init?.signal?.aborted) {
+          return Promise.reject(init.signal.reason);
+        }
+        startedAttempts += 1;
+        return new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => {
+            reject(init.signal!.reason);
+          });
+        });
+      });
+
+      const client = create({ fetch: mockFetch as any })
+        .pipe(retry, 2, { delay: { initial: 5, max: 5, multiplier: 1 } })
+        .pipe(totalTimeout, 40)
+        .pipe(url, 'https://x.y/api');
+
+      let caught: unknown;
+      try {
+        await doFetch(client);
+      } catch (e) {
+        caught = e;
+      }
+
+      expect(caught).toBeInstanceOf(TimeoutError);
+      expect((caught as TimeoutError).message).toBe(
+        'Request timed out after 40ms'
+      );
+      // Only the first attempt actually started work; once the budget
+      // elapsed the remaining retries failed instantly on the aborted
+      // signal instead of re-running the slow attempt.
+      expect(startedAttempts).toBeLessThan(3);
+      expect(mockFetch.mock.calls.length).toBeLessThanOrEqual(3);
+    });
+
+    it('propagates a user abort unchanged (AbortError, not TimeoutError)', async function () {
+      const controller = new AbortController();
+      const mockFetch = vi.fn().mockImplementation((_, init) => {
+        return new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => {
+            reject(init.signal!.reason);
+          });
+        });
+      });
+
+      const client = totalTimeout(
+        { url: 'https://x.y/api', fetch: mockFetch as any, signal: controller.signal },
+        1000
+      );
+
+      setTimeout(() => controller.abort(), 20);
+
+      let caught: unknown;
+      try {
+        await doFetch(client);
+      } catch (e) {
+        caught = e;
+      }
+
+      expect(caught).toBeInstanceOf(DOMException);
+      expect((caught as DOMException).name).toBe('AbortError');
+      expect(caught).not.toBeInstanceOf(TimeoutError);
+    });
+
+    it('does not affect a fast response within the budget', async function () {
+      const mockFetch = vi
+        .fn()
+        .mockResolvedValue(new Response('ok'));
+
+      const client = totalTimeout(
+        { url: 'https://x.y/api', fetch: mockFetch as any },
+        100
+      );
+
+      const response = await doFetch(client);
+      expect(response.ok).toBe(true);
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      expect(mockFetch.mock.calls[0]?.[1]?.signal?.aborted).toBe(false);
+    });
+
+    it('composes with the per-attempt timeout: nested AbortSignal.any layers', async function () {
+      // A generous per-attempt budget inside a tight whole-request budget:
+      // the outer layer must fire and win, proving the two AbortSignal.any
+      // compositions nest cleanly.
+      const mockFetch = vi.fn().mockImplementation((_, init) => {
+        return new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => {
+            reject(init.signal!.reason);
+          });
+        });
+      });
+
+      const client = totalTimeout(
+        timeout({ url: 'https://x.y/api', fetch: mockFetch as any }, 5000),
+        30
+      );
+
+      let caught: unknown;
+      try {
+        await doFetch(client);
+      } catch (e) {
+        caught = e;
+      }
+
+      expect(caught).toBeInstanceOf(TimeoutError);
+      expect((caught as TimeoutError).message).toBe(
+        'Request timed out after 30ms'
+      );
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe('query', function () {

@@ -2,7 +2,7 @@ import { json } from './config';
 import { HTTPError, NetworkError } from './errors';
 import { sortMiddlewares } from './middleware';
 import type { Fetchable, Pipe, ReaderData, ResolveData } from './types';
-import { getData, hasData, applyTimeout } from './util';
+import { getData, hasData, applyTimeout, applyTotalTimeout } from './util';
 
 /**
  * Reports whether `url` parses as an absolute URL (i.e. carries its own
@@ -63,6 +63,7 @@ export function toFetchParams(o: Fetchable): [string, RequestInit] {
     add,
     with: w,
     timeoutMs,
+    totalTimeoutMs,
     ...rest
   } = o as Fetchable & Pipe;
 
@@ -150,6 +151,13 @@ function applyNetworkError(
  * `signal` via `AbortSignal.any` (Node.js >= 20.3.0). Without a budget this
  * is a zero-overhead pass-through.
  *
+ * When `totalTimeout()` set a `totalTimeoutMs` budget, an outermost built-in
+ * layer wraps the fully applied chain (outside every middleware, including
+ * retry), so the budget spans all attempts and the backoff delays between
+ * them; elapsing it aborts the in-flight attempt and rejects with a
+ * {@link TimeoutError}. The two layers compose — the per-attempt layer
+ * nests its own `AbortSignal.any` inside the whole-request one.
+ *
  * Independently of the budget, the base fetch itself is wrapped by
  * {@link applyNetworkError} so network-level `TypeError` rejections surface
  * as {@link NetworkError} — inside the middleware chain, so user middleware
@@ -166,7 +174,15 @@ export function applyMiddlewares(f: typeof globalThis.fetch, o: Fetchable) {
   const innermost =
     o.timeoutMs != null ? applyTimeout(base, o.timeoutMs) : base;
   // Apply from last to first so that the first middleware is the outermost
-  return sorted.reduceRight((f, entry) => entry.middleware(f, o), innermost);
+  const chained = sorted.reduceRight(
+    (f, entry) => entry.middleware(f, o),
+    innermost
+  );
+  // The whole-request budget sits outside every middleware so it also
+  // bounds the retry loop (attempts + backoff) as a single unit.
+  return o.totalTimeoutMs != null
+    ? applyTotalTimeout(chained, o.totalTimeoutMs)
+    : chained;
 }
 
 /**

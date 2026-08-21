@@ -564,6 +564,43 @@ export function timeout<T extends Options>(
 }
 
 /**
+ * Sets a whole-request timeout budget covering all retry attempts.
+ *
+ * Unlike {@link timeout} — which restarts a fresh budget for every attempt —
+ * the value stored as `totalTimeoutMs` spans the entire request: every retry
+ * attempt plus the backoff delays between them. Once the budget elapses the
+ * in-flight attempt is aborted and the request rejects with a
+ * {@link TimeoutError}, so combinations like `retry(3)` with a slow
+ * endpoint cannot drag on indefinitely.
+ *
+ * Like `timeout`, piping is lazy and side-effect free: the value is only
+ * stored, and the timer starts when the request actually executes. A later
+ * `totalTimeout` pipe overwrites an earlier one. An existing `signal` is
+ * honored — both are combined with `AbortSignal.any`.
+ *
+ * Requires `AbortSignal.any` (Node.js >= 20.3.0 or a modern browser).
+ *
+ * @param o - The options object to modify
+ * @param ms - The whole-request timeout budget in milliseconds
+ * @returns A new options object with `totalTimeoutMs` set
+ *
+ * @example
+ * ```ts
+ * // The whole request — all retries included — must finish within 10s
+ * client.pipe(totalTimeout, 10000)
+ * ```
+ */
+export function totalTimeout<T extends Options>(
+  o: T,
+  ms: number
+): T & { totalTimeoutMs: number } {
+  return {
+    ...o,
+    totalTimeoutMs: ms,
+  };
+}
+
+/**
  * Input accepted by {@link headers}: a plain record, a `Headers` instance,
  * or an array of `[name, value]` tuples. `Headers` instances and tuple
  * arrays are normalized into a plain record for storage.

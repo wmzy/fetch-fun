@@ -236,6 +236,15 @@ export type Options<Q extends QueryType = QueryType> = Omit<
    * `AbortSignal.any` (Node.js >= 20.3.0).
    */
   timeoutMs?: number;
+  /**
+   * Whole-request timeout budget in milliseconds covering all retry
+   * attempts. Stored by `totalTimeout()` and applied when the request
+   * executes: a single `AbortSignal.timeout(ms)` spans the entire request
+   * — every attempt plus the backoff delays between them — wrapped
+   * around the whole middleware chain and combined with `signal` via
+   * `AbortSignal.any` (Node.js >= 20.3.0).
+   */
+  totalTimeoutMs?: number;
 };
 
 /**

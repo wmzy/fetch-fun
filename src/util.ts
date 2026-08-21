@@ -88,6 +88,56 @@ export function applyTimeout(
 }
 
 /**
+ * Wraps a fetch function with a whole-request timeout signal.
+ *
+ * Unlike {@link applyTimeout}, which grants every call a fresh budget, the
+ * budget here spans the entire wrapped function — every retry attempt made
+ * by an inner middleware plus the backoff delays between them. Each
+ * invocation creates one `AbortSignal.timeout(ms)` and combines it with any
+ * signal already present in `init` using `AbortSignal.any` (requires
+ * Node.js >= 20.3.0 or a modern browser), so wrapping `applyTimeout`
+ * (nested `AbortSignal.any` compositions) composes cleanly.
+ *
+ * A timeout abort surfaces as a {@link TimeoutError} with the underlying
+ * `DOMException` attached as `cause`; user-initiated aborts
+ * (`AbortError`, including a user `signal` that fired in the same race)
+ * propagate unchanged.
+ *
+ * @param f - The fetch function to wrap (e.g. a fully applied middleware chain)
+ * @param ms - The whole-request timeout budget in milliseconds
+ * @returns A fetch function that aborts after `ms` in total per request
+ */
+export function applyTotalTimeout(
+  f: typeof globalThis.fetch,
+  ms: number
+): typeof globalThis.fetch {
+  return async (input, init) => {
+    const userSignal = init?.signal;
+    const totalSignal = AbortSignal.timeout(ms);
+    const signal = userSignal
+      ? AbortSignal.any([userSignal, totalSignal])
+      : totalSignal;
+    try {
+      return await f(input, { ...init, signal });
+    } catch (e) {
+      // Only claim the error when our own budget elapsed and the user's
+      // signal is still intact — otherwise the abort belongs to the caller.
+      if (
+        totalSignal.aborted &&
+        !userSignal?.aborted &&
+        e instanceof DOMException &&
+        (e.name === 'TimeoutError' || e.name === 'AbortError')
+      ) {
+        throw new TimeoutError(`Request timed out after ${ms}ms`, {
+          cause: e,
+        });
+      }
+      throw e;
+    }
+  };
+}
+
+/**
  * Module-level store for parsed response data.
  *
  * Uses a WeakMap keyed by the original Response so the response's prototype
