@@ -4,7 +4,7 @@
 [![Build Status](https://github.com/wmzy/fetch-fun/actions/workflows/ci.yml/badge.svg)](https://github.com/wmzy/fetch-fun/actions)
 [![Coverage Status](https://coveralls.io/repos/github/wmzy/fetch-fun/badge.svg?branch=main)](https://coveralls.io/repos/github/wmzy/fetch-fun?branch=main)
 
-A functional fetch toolkit built on one composition protocol: **any function of the shape `(o, ...args) => o'` is an extension point**. Config functions, middlewares, executors, and your own helpers are all just pipeable functions over a plain options object — no class hierarchy, no hidden state, zero runtime dependencies.
+A functional fetch toolkit built on one composition protocol: **any function of the shape `(o, ...args) => o'` is an extension point**. Config functions, middlewares, executors, and your own helpers are all just pipeable functions over a plain options object — no class hierarchy, no hidden state, zero runtime dependencies. The small footprint is enforced, not estimated: CI runs size-limit budgets plus a tree-shaking verification, so a typical `create` + `url` + `fetchJSON` + `json` app stays ≈2 kB min+gzip and the full client ≈5 kB.
 
 ## Why fetch-fun (vs ky / ofetch / wretch / up-fetch)
 
@@ -20,9 +20,11 @@ A functional fetch toolkit built on one composition protocol: **any function of 
 | Network errors | Transport `TypeError`s wrapped as typed `NetworkError` (`url?`, original as `cause`); user middleware errors untouched; still retryable | Wrapped in `NetworkError` | Wrapped in `FetchError` | Native errors | No typed wrapper documented |
 | Schema validation | Built-in, Standard Schema v1 (Zod/Valibot/ArkType, duck-typed, zero adapters) | Built-in, Standard Schema (`.json(schema)` throws `SchemaValidationError`) | Bring your own via interceptors | Bring your own via middlewares | Built-in, Standard Schema (Zod/Valibot/ArkType) |
 | Retry policy | Method-aware (idempotency), status-aware, exp. backoff + jitter, per-attempt timeout; `Retry-After` honored **and capped** (`maxRetryAfter`); `shouldRetry` predicate for response/error-driven decisions | Status/method filter, backoff, `Retry-After` for 413/429/503 | Retry count/delay + status filter | Bring-your-own retry middleware | `retry: { attempts, delay, when }` — attempts/delay may be functions of the request/attempt |
+| Total timeout | `totalTimeout(ms)` — whole-request budget spanning all retries + backoff; lazy; composes with per-attempt `timeout` | `totalTimeout` option | — | — | — |
 | Progress | Built-in `withProgress`: per-chunk download progress (`percent`/`transferred`/`total`), upload progress for `ReadableStream` bodies | `onDownloadProgress` / `onUploadProgress` | — | Progress addon | Upload + download via `onRequestStreaming`/`onResponseStreaming` |
 | Tree-shaking | 0 deps + `sideEffects: false` + every helper an independent named export — bundlers keep only what you import (`url` + `fetchJSON` never pull in `retry`/`progress`/`validate`; full client ≈ 5 kB min+gzip, a `create`+`url`+`fetchJSON`+`json` app ≈ 2 kB — enforced by CI) | Single factory entry — retry, hooks, and progress ship with every import | `$fetch` wrapper + bundled utilities — one unit, little to shake | Core + addons — unused addons stay out of the bundle | One `up()` builder — the whole client ships as a unit |
 | Dependencies | **0** | 0 | Small bundled utility set | 0 | 0 |
+| Node.js baseline | `>= 20.3` — only requires `AbortSignal.any` / `AbortSignal.timeout` | `22+` (v2) | cross-runtime (v1, via `node-fetch-native`) | `22+` (v3) | modern browsers + Node |
 
 ## Table of Contents
 
@@ -32,14 +34,15 @@ A functional fetch toolkit built on one composition protocol: **any function of 
 - [Core Concept: the pipe protocol](#core-concept-the-pipe-protocol)
 - [Config Functions Reference](#config-functions-reference)
   - [timeout — lazy, per-attempt budget](#timeout--lazy-per-attempt-budget)
+  - [totalTimeout — whole-request budget](#totaltimeout--whole-request-budget)
   - [retry — decision matrix](#retry--decision-matrix)
   - [validate — Standard Schema validation](#validate--standard-schema-validation)
 - [Executors: fetch / fetchData / fetchJSON](#executors-fetch--fetchdata--fetchjson)
 - [Errors](#errors)
 - [Middleware and the Positioning System](#middleware-and-the-positioning-system)
 - [Type Inference](#type-inference)
-- [OpenAPI-typed clients](#openapi-typed-clients)
-- [Recipes: data libraries, auth, testing](#recipes-data-libraries-auth-testing)
+- [OpenAPI-typed clients](docs/openapi.md)
+- [Recipes: data libraries, auth, testing](docs/recipes.md)
 - [Utilities and Advanced API](#utilities-and-advanced-api)
 - [Versioning](#versioning)
 - [Contributing](#contributing)
@@ -112,6 +115,14 @@ One naming caveat — three different things are called `fetch` here:
 
 Same name, three roles — when mixing them, make sure you know which one you are holding.
 
+`json` is overloaded the same way, across the request/response divide:
+
+- the third argument of the method sugar — `post(o, path, json)` — is the **request body**: stringified and sent with a `Content-Type` (`jsonBody` semantics).
+- `ff.json(o)` is the **response reader**: it parses the body that comes back.
+- `ff.fetchJSON(o)` is the **executor**: it adds the `json` reader itself and resolves the parsed value.
+
+`client.pipe(ff.post, '/users', { name: 'Ada' })` sends JSON; `client.pipe(ff.json)` reads it back. One word, both directions — check which side you are holding.
+
 ## Core Concept: the pipe protocol
 
 `create()` returns `Options & Pipe`. `pipe`, `add`, and `with` are three aliases for the same operation:
@@ -156,11 +167,12 @@ Every config function has the shape `(o, ...args) => o'` — it takes the curren
 | `jsonBody(o, data)` | `JSON.stringify` the body and set `Content-Type: application/json` | `data: unknown` |
 | `signal(o, s)` | Set an `AbortSignal` for cancellation | `s: AbortSignal` |
 | `timeout(o, ms)` | Set a **lazy** per-attempt timeout budget (`timeoutMs`) | `ms: number` |
+| `totalTimeout(o, ms)` | Set a **lazy** whole-request timeout budget (`totalTimeoutMs`) covering the first attempt, all retries, and backoff waits | `ms: number` |
 | `retry(o, maxRetries, opts?)` | Add the smart retry middleware | `maxRetries`, [`RetryOptions`](#retry--decision-matrix) |
 | `mapResponse(o, mapper)` | Add a middleware mapping `(res, options) => Response` | `mapper` |
 | `checkError(o, check)` | Add a middleware that inspects `res` and may throw | `check: (res) => void \| Promise<void>` |
 | `data(o, reader)` | Add a response reader; its return value becomes the request's data | `reader: (res) => unknown` |
-| `json(o, parseJson?)` | Reader: parse the response body as JSON (does **not** touch request headers) | `parseJson?: (raw: string) => unknown` — custom parser, e.g. `JSON.parse` with a reviver to revive `Date`s; its return type flows into `fetchData`'s inference |
+| `json(o, parseJson?)` | Reader: parse the response body as JSON (does **not** touch request headers); an empty body (`204`/`205`/`HEAD`, …) resolves `undefined` — `parseJson` is never called for empty bodies | `parseJson?: (raw: string) => unknown` — custom parser, e.g. `JSON.parse` with a reviver to revive `Date`s; its return type flows into `fetchData`'s inference |
 | `text(o)` | Reader: read the body as text | — |
 | `blob(o)` | Reader: read the body as a `Blob` | — |
 | `arrayBuffer(o)` | Reader: read the body as an `ArrayBuffer` | — |
@@ -189,6 +201,26 @@ const res = await client
 ```
 
 A timeout abort is rethrown as `ff.TimeoutError` with the underlying `DOMException` as `cause`; user-initiated aborts (`AbortError`) propagate unchanged.
+
+### totalTimeout — whole-request budget
+
+`totalTimeout(o, ms)` stores `totalTimeoutMs` — lazily again: no timer starts until the request executes, and a later `totalTimeout` pipe overwrites an earlier one. At execution time a single `AbortSignal.timeout(ms)` wraps the fully applied middleware chain, outside retry, so the one budget covers the first attempt, every retry, and the backoff waits in between. When it elapses, the in-flight attempt is aborted and the request rejects with `ff.TimeoutError` carrying the budget (`Request timed out after 10000ms`); aborting through your own `signal` still propagates as the native `AbortError`.
+
+`totalTimeout` and per-attempt `timeout` compose independently — the outer total bounds the whole sequence, the inner budget bounds each attempt:
+
+```typescript
+// The whole request — 3 attempts and the backoff between them — must
+// finish within 10s; any single attempt that stalls for 3s fails faster
+// and lets retry start sooner.
+const res = await client
+  .pipe(ff.url, '/flaky')
+  .pipe(ff.timeout, 3000)       // per-attempt: a fresh 3s budget on every try
+  .pipe(ff.retry, 2)            // up to 3 attempts with backoff in between
+  .pipe(ff.totalTimeout, 10000) // whole-request: one 10s budget over it all
+  .pipe(ff.fetch);
+```
+
+This mirrors ky's `totalTimeout` option — a deadline over retries rather than per attempt — except here it is one more pipeable config function rather than an option flag.
 
 ### retry — decision matrix
 
@@ -297,9 +329,9 @@ All four classes extend `Error` and are exported from the package root.
 
 | Class | Thrown by | Fields |
 | --- | --- | --- |
-| `HTTPError` | `fetchData` / `fetchJSON` on `!res.ok` | `response: Response` — the failed response; `request?: Request` — best-effort reconstructed request; `data?: unknown` — parsed error body when a reader (e.g. `json`) already ran |
+| `HTTPError` | `fetchData` / `fetchJSON` on `!res.ok` | `response: Response` — the failed response; `request?: Request` — best-effort reconstructed request; `data?: unknown` — parsed error body when a reader (e.g. `json`) already ran; a non-2xx body the reader cannot parse (an HTML error page under `json`) resolves to `undefined`, so the `HTTPError` is still what you catch — never the reader's `SyntaxError` |
 | `NetworkError` | The innermost wrapper around the base fetch, when fetch itself rejects with a `TypeError` (DNS failure, connection refused, TLS error, offline) | `url?: string` — best-effort URL of the failed request; `cause` — the original `TypeError`; message reads like `GET https://api.example.com/x failed: network error` |
-| `TimeoutError` | The timeout layer when the per-attempt budget elapses | `cause` — the underlying `DOMException`; message includes the budget (`Request timed out after 5000ms`) |
+| `TimeoutError` | The timeout layers — per-attempt `timeout` or whole-request `totalTimeout` — when the budget elapses | `cause` — the underlying `DOMException`; message includes the budget (`Request timed out after 5000ms`) |
 | `ValidationError` | `validate` on failing schema | `issues: readonly unknown[]` — the schema's issues (Zod/Valibot/ArkType objects); `data?: unknown` — the unvalidated data that was rejected |
 
 `NetworkError` wrapping sits directly around the base fetch — inside every middleware — so only the transport's own `TypeError`s are relabeled, and only when the signal hasn't aborted: errors thrown by user middlewares and user-initiated aborts keep their identity. `retry` still treats `NetworkError` as retryable.
@@ -438,490 +470,11 @@ const q = ff.createQuery({ page: '1', limit: '10' } as const);
 
 ## OpenAPI-typed clients
 
-The phantom types don't stop at hand-written URLs. If your API is described by an OpenAPI schema, `openapi-typescript` can turn the spec into pure types, and a ~60-line helper grafts them onto the pipe: paths, methods, request bodies, and 200-response shapes all become compile-time constraints. Unlike `openapi-fetch` (the dedicated wrapper from the same project), nothing here is a second runtime — it's the same zero-dependency pipe, just carrying better types.
-
-Generate the types from your spec:
-
-```bash
-npx openapi-typescript ./openapi.yaml -o ./api-types.d.ts
-```
-
-Then keep this helper next to them:
-
-```typescript
-// openapi.ts — graft openapi-typescript's `paths` onto fetch-fun's phantom types
-import * as ff from 'fetch-fun';
-import type { paths } from './api-types';
-
-/** OpenAPI operation ids (excludes openapi-typescript's `parameters` key). */
-type Op = 'get' | 'put' | 'post' | 'delete' | 'options' | 'head' | 'patch' | 'trace';
-
-/** JSON body an operation accepts (`unknown` when the spec defines none). */
-type JsonBody<O> = O extends {
-  requestBody?: { content: { 'application/json': infer B } };
-}
-  ? B
-  : unknown;
-
-/** JSON payload of an operation's 200 response (`unknown` when absent). */
-type JsonOk<O> = O extends {
-  responses: { 200: { content: { 'application/json': infer D } } };
-}
-  ? D
-  : unknown;
-
-/** Path must be a real key of the generated `paths` type. */
-export function typedUrl<T extends ff.Options, U extends keyof paths & string>(
-  o: T,
-  path: U
-) {
-  return ff.url<T, U>(o, path);
-}
-
-/** Method must be an operation that exists under that path. */
-export function typedMethod<
-  T extends ff.Options,
-  U extends keyof paths & string,
-  M extends keyof paths[U] & Op,
->(o: T & { url: U }, m: M) {
-  return ff.method<T & { url: U }, Uppercase<M>>(
-    o,
-    m.toUpperCase() as Uppercase<M>
-  );
-}
-
-/** Body must satisfy the operation's requestBody schema. */
-export function typedJsonBody<
-  T extends ff.Options,
-  U extends keyof paths & string,
-  M extends keyof paths[U] & Op,
->(
-  o: T & { url: U; method: Uppercase<M> },
-  m: M,
-  body: JsonBody<paths[U][M]>
-) {
-  return ff.jsonBody(o, body);
-}
-
-/** Reads the 200 response as the operation's response schema. */
-export function typedJson<
-  T extends ff.Options,
-  U extends keyof paths & string,
-  M extends keyof paths[U] & Op,
->(o: T & { url: U; method: Uppercase<M> }, m: M) {
-  return ff.json<T & { url: U; method: Uppercase<M> }, JsonOk<paths[U][M]>>(o);
-}
-```
-
-Every step of the chain is now checked against the spec — `fetchData` returns the operation's response type with no type arguments:
-
-```typescript
-// GET /users → Promise<User[]> — from paths['/users']['get'].responses[200]
-const users = await api
-  .pipe(typedUrl, '/users')
-  .pipe(typedMethod, 'get')
-  .pipe(typedJson, 'get')
-  .pipe(ff.fetchData);
-
-// POST /users — body checked against the requestBody schema, response is User
-const created = await api
-  .pipe(typedUrl, '/users')
-  .pipe(typedMethod, 'post')
-  .pipe(typedJsonBody, 'post', { name: 'Ada', email: 'ada@example.com' })
-  .pipe(typedJson, 'post')
-  .pipe(ff.fetchData);
-```
-
-Typos fail loudly: `'/user'` is not a key of `paths`, `'delete'` doesn't exist under `/users`, `{ nome: 'Ada' }` doesn't satisfy `UserInput`, and reading the response for `'post'` right after setting the method to `'get'` is a type error — `typedJson` requires `method: Uppercase<M>`, so the method and the reader can't drift apart.
-
-**Types are a promise, not a guarantee.** The spec-derived type only says what the server *should* return. For runtime enforcement, pair the graft with `validate` — write (or generate) a Standard Schema for the same payload and the two layers agree:
-
-```typescript
-const UserListSchema = z.array(UserSchema); // Zod, Valibot, ArkType — any vendor
-
-const users = await api
-  .pipe(typedUrl, '/users')
-  .pipe(typedMethod, 'get')
-  .pipe(ff.json)
-  .pipe(ff.validate, UserListSchema)
-  .pipe(ff.fetchData); // Promise<User[]> — and throws ValidationError if the server lies
-```
-
-**Know the edges.** `openapi-typescript` emits types only — zero runtime, the same trade fetch-fun makes — so `allOf` and discriminator unions type-check but aren't verified at runtime (that's the `validate` pairing above). Path parameters stay plain strings: `typedUrl` matches literal keys like `'/users/{id}'`, so templated calls need a small template-literal matcher or a cast. And `JsonOk` covers the 200 response — extend the conditional if you want other status codes in the union.
-
-**Versus `openapi-fetch`:** it's a purpose-built client with path-param substitution and its own request hooks done for you; the graft above costs ~60 lines you own, but keeps the whole pipe in play — middleware positioning, retry/timeout, Standard Schema `validate`, injectable fetch — and doesn't care where the `paths` types came from: generated, hand-written, or adopted one endpoint at a time.
+Grafting `openapi-typescript`'s generated `paths` types onto the pipe — typed paths, methods, request bodies, and 200-response shapes via a ~60-line helper you own — now lives in [docs/openapi.md](docs/openapi.md), including the comparison with `openapi-fetch`.
 
 ## Recipes: data libraries, auth, testing
 
-Short, focused recipes for the places fetch-fun usually ends up living: data-fetching libraries, token rotation, meta-frameworks, tests, and schema validation.
-
-### TanStack Query / SWR
-
-fetch-fun's executor semantics map one-to-one onto what data-fetching hooks expect from a `queryFn` / `fetcher`: *return data, throw on failure*. `fetchData` / `fetchJSON` already do exactly that — and throw a typed `HTTPError` (`.response`, `.data`) on non-2xx — while `fetch` never throws on status at all, so the callback itself decides what a failure means. Either shape plugs in directly: no adapter layer, no error-code unpacking.
-
-```typescript
-import { useQuery } from '@tanstack/react-query';
-import * as ff from 'fetch-fun';
-
-const api = ff
-  .create({ baseUrl: 'https://api.example.com' })
-  .pipe(ff.timeout, 5000) // lazy, per-attempt budget — fresh on every retry
-  .pipe(ff.retry, 2); // transport-level retry lives here, not in the query layer
-
-export function useUser(id: number) {
-  const query = useQuery({
-    queryKey: ['users', id],
-    // fetchData: data out, typed HTTPError out — usable as queryFn as-is
-    queryFn: () =>
-      api.pipe(ff.get, `/users/${id}`).pipe(ff.json).pipe(ff.fetchData<User>),
-    select: (user) => user.name, // derived per subscriber, not stored in cache
-    retry: false, // fetch-fun already owns the retry policy — don't multiply attempts
-  });
-
-  if (query.error instanceof ff.HTTPError) {
-    // 4xx/5xx with the parsed error body attached
-    console.log(query.error.response.status, query.error.data);
-  } else if (query.error instanceof ff.NetworkError) {
-    // transport failure: url + the original TypeError as cause
-    console.log('request to', query.error.url, 'never reached the server');
-  }
-  return query;
-}
-```
-
-When a non-2xx should be *data* rather than an error (optional resources, cacheable misses), switch that one queryFn to `fetch` — status never throws there:
-
-```typescript
-queryFn: async () => {
-  const res = await api.pipe(ff.get, `/users/${id}`).pipe(ff.fetch);
-  return res.ok ? ((await res.json()) as User) : null;
-},
-```
-
-Mutations are the same pipe (method sugar + JSON body in one step), and in SWR the identical pipe is a drop-in `fetcher`:
-
-```typescript
-// mutationFn (TanStack Query)
-mutationFn: (input: { id: number; name: string }) =>
-  api.pipe(ff.patch, `/users/${input.id}`, { name: input.name })
-     .pipe(ff.fetchData<User>),
-
-// SWR
-useSWR(['users', id], ([, id]) =>
-  api.pipe(ff.get, `/users/${id}`).pipe(ff.json).pipe(ff.fetchData<User>)
-);
-```
-
-**Retry and timeout split.** TanStack Query retries the *query* (3 attempts by default, blind exponential backoff); fetch-fun retries the *transport* with method/status awareness, `Retry-After` honoring, and a fresh per-attempt timeout. Pick one layer: pipe `retry` and disable the library's (`retry: false` in TanStack Query, `shouldRetryOnError: false` in SWR), or keep the library defaults and don't pipe `retry` — running both multiplies attempts (a 3-retry query over a 2-retry transport is up to 12 requests per outage). Cancellation composes either way: pipe the `signal` TanStack Query hands your `queryFn` through `ff.signal` so unmounts abort the in-flight request.
-
-### 401 → refresh → retry
-
-Token refresh is a middleware concern. At the middleware layer a 401 is still a resolved `Response` — nothing has thrown yet — so you can refresh the token and replay the request before the error machinery ever sees it:
-
-```typescript
-import * as ff from 'fetch-fun';
-
-let accessToken = /* read from your auth store */ '';
-let refreshing: Promise<void> | null = null;
-
-async function refreshAccessToken(): Promise<void> {
-  // Single-flight lock: concurrent 401s share one refresh round-trip,
-  // so a burst of expiring tokens can't stampede the auth server.
-  refreshing ??= (async () => {
-    const res = await fetch('/auth/refresh', {
-      method: 'POST',
-      credentials: 'include', // the refresh cookie, not the bearer
-    });
-    if (!res.ok) throw new Error(`refresh failed: ${res.status}`);
-    accessToken = ((await res.json()) as { token: string }).token;
-  })().finally(() => {
-    refreshing = null; // a later 401 triggers a fresh round-trip
-  });
-  return refreshing;
-}
-
-// Middleware function form: (fetchFn, options) => fetchFn.
-// The header is built from the live variable, so every attempt —
-// first try and replay alike — carries the current token.
-const withRefreshOn401: ff.MiddlewareFn = (f) => async (input, init) => {
-  const headers = new Headers(init?.headers);
-  headers.set('Authorization', `Bearer ${accessToken}`);
-  const res = await f(input, { ...init, headers });
-  if (res.status !== 401) return res;
-
-  await refreshAccessToken();
-  headers.set('Authorization', `Bearer ${accessToken}`);
-  return f(input, { ...init, headers }); // exactly one replay, never a loop
-};
-
-const authed = ff
-  .create({ baseUrl: 'https://api.example.com' })
-  .pipe(ff.use, withRefreshOn401)
-  .pipe(ff.timeout, 5000);
-
-// A 401 that refreshes successfully resolves normally; a 401 after a
-// failed refresh surfaces as the usual typed HTTPError from fetchData.
-const me = await authed.pipe(ff.get, '/me').pipe(ff.json).pipe(ff.fetchData<Me>);
-```
-
-**Why not just `withAuth`?** `withAuth(credentials, type = 'Bearer')` re-applies `${type} ${credentials}` on every retry attempt, but it captures the credentials *string* at pipe time — fine for a token that outlives the client, stale for one that rotates mid-session. Two ways around that:
-
-```typescript
-const api = ff
-  .create({ baseUrl: 'https://api.example.com' })
-  .pipe(ff.timeout, 5000);
-
-// (a) Pipe withAuth per request: the argument is evaluated at call time,
-//     so the chain always carries the token as it is *right now*.
-const listUsers = (page: number) =>
-  api
-    .pipe(ff.use, ff.withAuth(accessToken))
-    .pipe(ff.get, '/users')
-    .pipe(ff.query, { page })
-    .pipe(ff.fetchJSON<User[]>);
-
-// (b) Rotate between attempts instead of replaying manually: make 401s
-//     reject via checkError, then refresh in a createRetryBase callback.
-//     Piped first => the retry wrapper sits outside and sees the rejection;
-//     the header middleware sits inside, so each attempt re-reads the token.
-const refreshBetweenAttempts = ff.createRetryBase(async (attempt, error) => {
-  const isStale401 =
-    error instanceof ff.HTTPError && error.response.status === 401;
-  if (attempt >= 1 || !isStale401) throw error; // rethrowing stops the loop
-  await refreshAccessToken();
-});
-
-const bearerFromStore: ff.MiddlewareFn = (f) => (input, init) => {
-  const headers = new Headers(init?.headers);
-  headers.set('Authorization', `Bearer ${accessToken}`);
-  return f(input, { ...init, headers });
-};
-
-const apiRotating = ff
-  .create({ baseUrl: 'https://api.example.com' })
-  .pipe(ff.use, refreshBetweenAttempts) // outer: runs the refresh
-  .pipe(ff.use, bearerFromStore) // inner: header rebuilt per attempt
-  .pipe(ff.checkError, (res) => {
-    if (res.status === 401) throw new ff.HTTPError(res); // 401 now rejects
-  });
-```
-
-### Nuxt / Vue
-
-`useFetch` and `useAsyncData` own what a *composable* should own: SSR payload serialization, deduplication, and navigation-aware loading state. None of that is transport — and that's the seam where fetch-fun plugs in. Build one shared client in a plugin (base URL from runtime config, auth from your store), then use an executor as the `useAsyncData` handler — the same `queryFn` shape as the TanStack recipe above. Plain-Vue apps with TanStack Vue Query work identically.
-
-```typescript
-// plugins/api.ts — one shared client for the whole app
-import * as ff from 'fetch-fun';
-
-export default defineNuxtPlugin(() => {
-  const auth = useAuthStore();
-  const config = useRuntimeConfig();
-
-  // Read the token at request time: the store ref updates during the
-  // session, and every request picks up the current value.
-  const authed: ff.MiddlewareFn = (f) => (input, init) => {
-    const headers = new Headers(init?.headers);
-    if (auth.token) headers.set('Authorization', `Bearer ${auth.token}`);
-    return f(input, { ...init, headers });
-  };
-
-  const api = ff
-    .create({ baseUrl: config.public.apiBase })
-    .pipe(ff.use, authed)
-    .pipe(ff.retry, 2)
-    .pipe(ff.timeout, 5000);
-
-  return { provide: { api } };
-});
-```
-
-```typescript
-// pages/users.vue — the composable keeps SSR/caching; the pipe is the fetcher
-const { $api } = useNuxtApp();
-
-const { data: users, error } = await useAsyncData('users', () =>
-  $api.pipe(ff.get, '/users').pipe(ff.json).pipe(ff.fetchData<User[]>),
-);
-
-if (error.value instanceof ff.HTTPError && error.value.response.status === 404) {
-  // typed branch: render the empty state instead of an error page
-}
-```
-
-`useFetch(url)` is the shortcut that hard-wires `$fetch` as the fetcher; when you want fetch-fun's transport (retry, timeout, per-attempt auth), keep the composable and hand it your own handler, as above.
-
-### Next.js (RSC / route handlers)
-
-Server components and route handlers run where `fetch` is Node's built-in (18+) — and since executors call nothing but native `fetch` and `AbortSignal.any`, the exact same pipes you use in the browser work unchanged. Define one client per service in a shared module with the server-side concerns baked in:
-
-```typescript
-// lib/api.ts — shared by RSC, route handlers, and server actions
-import * as ff from 'fetch-fun';
-
-export const api = ff
-  .create({ baseUrl: process.env.API_BASE_URL })
-  // server-to-server calls carry a service token, not a user session
-  .pipe(ff.use, ff.withAuth(process.env.SERVICE_TOKEN!))
-  .pipe(ff.timeout, 5000)
-  .pipe(ff.retry, 2);
-```
-
-```typescript
-// app/users/page.tsx — a React Server Component, no browser in sight
-import { api } from '@/lib/api';
-
-export default async function UsersPage() {
-  const users = await api
-    .pipe(ff.get, '/users')
-    .pipe(ff.json)
-    .pipe(ff.fetchData<User[]>); // throws HTTPError — catch and branch like anywhere else
-  return <UserList users={users} />;
-}
-```
-
-```typescript
-// app/actions.ts — a server action: method sugar + JSON body in one pipe
-'use server';
-
-import { api } from '@/lib/api';
-
-export async function renameUser(formData: FormData) {
-  await api.pipe(
-    ff.patch,
-    `/users/${formData.get('id')}`,
-    { name: formData.get('name') }, // serialized + Content-Type set
-  );
-}
-```
-
-Route handlers are the same story — `await api.pipe(ff.get, '/health').pipe(ff.fetch)` gives you a `Response` to proxy, transform, or re-wrap. Because the client is just an options object with no platform APIs inside, `lib/api.ts` is also safe to import from client components (drop the service token there, of course).
-
-### Testing with msw / vitest
-
-`fetch(o)` resolves `o.fetch || globalThis.fetch` *per call* — and `setupServer` from msw patches `globalThis.fetch`. Put those two facts together and interception just works: no client wiring, no special test client. Assert what actually went over the wire inside the request handler:
-
-```typescript
-// users.test.ts
-import { describe, it, expect, beforeAll, afterEach, afterAll } from 'vitest';
-import { http, HttpResponse } from 'msw';
-import { setupServer } from 'msw/node';
-import * as ff from 'fetch-fun';
-
-const server = setupServer(
-  http.get('https://api.example.com/users', ({ request }) => {
-    // assertions on the real outgoing request, not on your mocks of it
-    expect(request.headers.get('Authorization')).toBe('Bearer test-token');
-    expect(new URL(request.url).searchParams.get('page')).toBe('2');
-    return HttpResponse.json([{ id: 1, name: 'Alice' }]);
-  }),
-);
-
-beforeAll(() => server.listen());
-afterEach(() => server.resetHandlers());
-afterAll(() => server.close());
-
-describe('users client', () => {
-  it('sends the bearer token and query params', async () => {
-    const api = ff
-      .create({ baseUrl: 'https://api.example.com' })
-      .pipe(ff.use, ff.withAuth('test-token'))
-      .pipe(ff.retry, 1);
-
-    const users = await api
-      .pipe(ff.get, '/users')
-      .pipe(ff.query, { page: 2 })
-      .pipe(ff.json)
-      .pipe(ff.fetchData<User[]>);
-
-    expect(users).toEqual([{ id: 1, name: 'Alice' }]);
-  });
-
-  it('surfaces 4xx as a typed HTTPError with the parsed body', async () => {
-    server.use(
-      http.get('https://api.example.com/users', () =>
-        HttpResponse.json({ message: 'gone' }, { status: 410 }),
-      ),
-    );
-
-    const err: unknown = await ff
-      .create({ baseUrl: 'https://api.example.com' })
-      .pipe(ff.get, '/users')
-      .pipe(ff.json)
-      .pipe(ff.fetchData<User[]>)
-      .catch((e) => e);
-
-    expect(err).toBeInstanceOf(ff.HTTPError);
-    expect((err as ff.HTTPError).response.status).toBe(410);
-    expect((err as ff.HTTPError).data).toEqual({ message: 'gone' });
-  });
-});
-```
-
-When you'd rather not depend on the global patch — scoping one client to one test, counting calls, or coexisting with another library's patching — use the `create({ fetch })` injection point instead:
-
-```typescript
-// An explicit wrapper, injected at creation: the client never touches
-// the global, so interception is hers, not the environment's.
-const calls: string[] = [];
-const recordingFetch: typeof globalThis.fetch = (input, init) => {
-  const url = typeof input === 'string' ? input : input.url;
-  calls.push(url);
-  return globalThis.fetch(input, init);
-};
-
-const api = ff.create({
-  baseUrl: 'https://api.example.com',
-  fetch: recordingFetch,
-});
-```
-
-### Zod 4 / Valibot: validation with zero adapters
-
-`validate` speaks [Standard Schema v1](https://standardschema.dev/) — it duck-types the `~standard` property on whatever you hand it. Zod 4, Valibot, and ArkType all ship the protocol natively, so the schema object goes straight into the pipe: no adapter package, no `fetch-fun-zod` to install, no wrapping function. (Where other clients tie schema parsing to one specific method or leave it to interceptors and addons, here it's a config fn — composable with any reader and any executor.)
-
-```typescript
-import { z } from 'zod'; // Zod 4: Standard Schema v1 built in
-
-const UserSchema = z.object({
-  id: z.number(),
-  name: z.string(),
-  email: z.email(),
-});
-
-const user = await api
-  .pipe(ff.get, '/users/42')
-  .pipe(ff.validate, UserSchema) // the schema itself, nothing else
-  .pipe(ff.fetchJSON); // resolves to UserSchema's output type — inferred, no generic
-```
-
-```typescript
-import * as v from 'valibot'; // Valibot: Standard Schema v1 built in
-
-const UserSchema = v.object({
-  id: v.number(),
-  name: v.string(),
-  email: v.pipe(v.string(), v.email()),
-});
-
-const user = await api
-  .pipe(ff.get, '/users/42')
-  .pipe(ff.validate, UserSchema)
-  .pipe(ff.fetchJSON); // same zero-adapter story, different library
-```
-
-Validation runs only on 2xx responses, so error bodies stay raw and land untouched on `error.data`; failures throw a `ValidationError` carrying the schema's issues:
-
-```typescript
-try {
-  await api.pipe(ff.get, '/users/42').pipe(ff.validate, UserSchema).pipe(ff.fetchJSON);
-} catch (e) {
-  if (e instanceof ff.ValidationError) {
-    console.log(e.issues); // [{ message: 'Invalid email', path: ['email'] }, ...]
-    console.log(e.data); // the raw parsed body that failed the schema
-  }
-}
-```
+Short, focused recipes — TanStack Query / SWR, 401 → refresh → retry, Nuxt / Vue, Next.js RSC, msw / vitest testing, and Zod 4 / Valibot validation — now live in [docs/recipes.md](docs/recipes.md).
 
 ## Utilities and Advanced API
 
