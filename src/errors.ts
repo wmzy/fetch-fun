@@ -12,6 +12,10 @@
  * `Request`. If a data reader middleware (e.g. `json`) already parsed the
  * error body, that parsed value is attached to {@link HTTPError.data}.
  *
+ * JSON-serializable: `JSON.stringify` picks up {@link HTTPError.toJSON}
+ * and emits a plain object (`name`, `message`, `status`, `url`, `data`) —
+ * safe to cross SSR → client or worker → main boundaries.
+ *
  * @example
  * ```ts
  * try {
@@ -44,6 +48,23 @@ export class HTTPError extends Error {
     );
     this.name = 'HTTPError';
   }
+
+  /** Plain-object shape emitted by `JSON.stringify` (no `Response`/`Request`). */
+  toJSON(): {
+    name: string;
+    message: string;
+    status: number;
+    url: string;
+    data?: unknown;
+  } {
+    return {
+      name: this.name,
+      message: this.message,
+      status: this.response.status,
+      url: this.response.url,
+      data: this.data,
+    };
+  }
 }
 
 /**
@@ -60,6 +81,11 @@ export class HTTPError extends Error {
  *
  * The {@link url} is extracted on a best-effort basis from the request
  * arguments and may be `undefined`.
+ *
+ * JSON-serializable: `JSON.stringify` picks up {@link NetworkError.toJSON}
+ * and emits a plain object (`name`, `message`, `url`, `cause` reduced to
+ * `{ name, message }`) — safe to cross SSR → client or worker → main
+ * boundaries.
  *
  * @example
  * ```ts
@@ -87,6 +113,21 @@ export class NetworkError extends Error {
     );
     this.name = 'NetworkError';
   }
+
+  /** Plain-object shape emitted by `JSON.stringify`; non-`Error` causes are dropped. */
+  toJSON(): {
+    name: string;
+    message: string;
+    url?: string;
+    cause?: { name: string; message: string };
+  } {
+    return {
+      name: this.name,
+      message: this.message,
+      url: this.url,
+      cause: causeToJSON(this.cause),
+    };
+  }
 }
 
 /**
@@ -94,6 +135,11 @@ export class NetworkError extends Error {
  *
  * Reserved for the timeout middleware; exported now so consumers can
  * reference the type before that lands.
+ *
+ * JSON-serializable: `JSON.stringify` picks up {@link TimeoutError.toJSON}
+ * and emits a plain object (`name`, `message`, `cause` reduced to
+ * `{ name, message }`) — safe to cross SSR → client or worker → main
+ * boundaries.
  *
  * @example
  * ```ts
@@ -111,6 +157,19 @@ export class TimeoutError extends Error {
     super(message, options);
     this.name = 'TimeoutError';
   }
+
+  /** Plain-object shape emitted by `JSON.stringify`; non-`Error` causes are dropped. */
+  toJSON(): {
+    name: string;
+    message: string;
+    cause?: { name: string; message: string };
+  } {
+    return {
+      name: this.name,
+      message: this.message,
+      cause: causeToJSON(this.cause),
+    };
+  }
 }
 
 /**
@@ -121,6 +180,10 @@ export class TimeoutError extends Error {
  * e.g. Zod/Valibot/ArkType issue objects) and the unvalidated `data` that
  * was rejected. A transformed/defaulted success value never throws — it
  * replaces the stored data instead.
+ *
+ * JSON-serializable: `JSON.stringify` picks up {@link ValidationError.toJSON}
+ * and emits a plain object (`name`, `message`, `issues`, `data`) — safe to
+ * cross SSR → client or worker → main boundaries and snapshot tests.
  *
  * @example
  * ```ts
@@ -148,6 +211,33 @@ export class ValidationError extends Error {
     super(message ?? issueMessage(issues) ?? 'Response data failed validation');
     this.name = 'ValidationError';
   }
+
+  /** Plain-object shape emitted by `JSON.stringify`. */
+  toJSON(): {
+    name: string;
+    message: string;
+    issues: readonly unknown[];
+    data?: unknown;
+  } {
+    return {
+      name: this.name,
+      message: this.message,
+      issues: this.issues,
+      data: this.data,
+    };
+  }
+}
+
+/**
+ * Serializes an error `cause` for cross-boundary transport: `Error` causes
+ * reduce to `{ name, message }`, anything else is dropped (`undefined`).
+ */
+function causeToJSON(
+  cause: unknown
+): { name: string; message: string } | undefined {
+  return cause instanceof Error
+    ? { name: cause.name, message: cause.message }
+    : undefined;
 }
 
 /**

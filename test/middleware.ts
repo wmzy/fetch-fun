@@ -1218,6 +1218,62 @@ describe('Middleware Ordering', () => {
       expect(logs[0]!.msg).toBe('Request:');
       expect(logs[1]!.msg).toBe('Error:');
     });
+
+    it('withAuth should re-evaluate a function token on every call (each attempt gets the latest token)', async () => {
+      const tokens = ['token-v1', 'token-v2'];
+      let calls = 0;
+      const seen: string[] = [];
+      const mockFetch = vi.fn().mockImplementation((_input, init) => {
+        // Two direct calls stand in for request + retry replay; the
+        // supplier must be consulted again on the second attempt.
+        seen.push(new Headers(init?.headers).get('authorization')!);
+        return Promise.resolve(new Response('ok'));
+      });
+
+      const config = withAuth(() => tokens[calls++]!);
+      const wrappedFetch = config.middleware(mockFetch as any, {} as any);
+      await wrappedFetch('https://example.com', undefined);
+      await wrappedFetch('https://example.com', undefined);
+
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+      expect(seen).toEqual(['Bearer token-v1', 'Bearer token-v2']);
+    });
+
+    it('withAuth should await an async token supplier', async () => {
+      let capturedInit: RequestInit | undefined;
+      const mockFetch = vi.fn().mockImplementation((_input, init) => {
+        capturedInit = init;
+        return Promise.resolve(new Response('ok'));
+      });
+
+      const config = withAuth(async () => {
+        // Microtask hop: the returned promise must actually be awaited
+        // (a leaked unawaited promise would resolve after the assert).
+        await Promise.resolve();
+        return 'async-jwt';
+      });
+      const wrappedFetch = config.middleware(mockFetch as any, {} as any);
+      await wrappedFetch('https://example.com', undefined);
+
+      expect(
+        new Headers(capturedInit?.headers).get('authorization')
+      ).toBe('Bearer async-jwt');
+    });
+
+    it('withAuth static string credentials stay unchanged across calls (no regression)', async () => {
+      const seen: string[] = [];
+      const mockFetch = vi.fn().mockImplementation((_input, init) => {
+        seen.push(new Headers(init?.headers).get('authorization')!);
+        return Promise.resolve(new Response('ok'));
+      });
+
+      const config = withAuth('static-token');
+      const wrappedFetch = config.middleware(mockFetch as any, {} as any);
+      await wrappedFetch('https://example.com', undefined);
+      await wrappedFetch('https://example.com', undefined);
+
+      expect(seen).toEqual(['Bearer static-token', 'Bearer static-token']);
+    });
   });
 
   describe('withProgress', () => {

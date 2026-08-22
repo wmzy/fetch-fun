@@ -16,3 +16,4 @@ export {
 } from './middleware';
 export type { RetryOptions, ProgressOptions, ProgressState } from './middleware';
 export { createQuery, type TupleArrayToRecord } from './util';
+export { events, type SSEEvent } from './events';

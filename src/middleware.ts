@@ -539,7 +539,12 @@ export function withTimeout(ms: number) {
  * template `${type} ${credentials}` with no extra encoding, so callers pass
  * already-encoded credentials (e.g. base64 for Basic).
  *
- * @param credentials - The credentials string placed after the auth type
+ * `credentials` may also be a supplier function (sync or async). The supplier
+ * is awaited on every request — including each retry attempt — so a rotated
+ * or refreshed token is picked up without writing a custom middleware.
+ *
+ * @param credentials - Static credentials string, or a (possibly async)
+ *   function returning the credentials string; invoked once per attempt
  * @param type - Authentication scheme ('Basic' | 'Bearer' | 'Digest' or any
  *   custom scheme string); defaults to 'Bearer' for backward compatibility
  * @returns A middleware configuration with proper naming and positioning
@@ -549,6 +554,12 @@ export function withTimeout(ms: number) {
  * // Bearer (default)
  * client.pipe(use, withAuth('your-jwt-token'))
  *
+ * // Dynamic token — re-read on every request and retry attempt
+ * client.pipe(use, withAuth(() => store.getToken()))
+ *
+ * // Async supplier — e.g. fetching or refreshing a JWT
+ * client.pipe(use, withAuth(async () => await auth.getJwt()))
+ *
  * // Basic — pass pre-encoded base64 credentials
  * client.pipe(use, withAuth(btoa('user:pass'), 'Basic'))
  *
@@ -557,19 +568,23 @@ export function withTimeout(ms: number) {
  * ```
  */
 export function withAuth(
-  credentials: string,
+  credentials: string | (() => string | Promise<string>),
   type: 'Basic' | 'Bearer' | 'Digest' | (string & {}) = 'Bearer'
 ) {
   return {
     name: 'builtin:auth' as const,
     inner: 'builtin:retry' as const,
-    middleware: ((f) => (input, init) => {
+    middleware: ((f) => async (input, init) => {
+      // Evaluated per call, not per factory invocation: each request and
+      // each retry replay sees the supplier's latest token.
+      const cred =
+        typeof credentials === 'function' ? await credentials() : credentials;
       // `new Headers(...)` interops with every HeadersInit shape; the
       // previous plain-object spread silently dropped headers already
       // packed into a Headers instance. Native fetch accepts the
       // instance directly.
       const headers = new Headers(init?.headers);
-      headers.set('Authorization', `${type} ${credentials}`);
+      headers.set('Authorization', `${type} ${cred}`);
       return f(input, { ...init, headers });
     }) as MiddlewareFn,
   };

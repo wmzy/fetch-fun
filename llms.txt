@@ -1,0 +1,24 @@
+# fetch-fun
+
+> A functional fetch toolkit built on one composition protocol: any function of the shape `(o, ...args) => o'` is an extension point. Zero dependencies, tree-shaking enforced by CI — ≈2.27 kB min+gzip for a minimal app (create/url/fetchJSON/json), ≈6.43 kB for the full client.
+
+## Key facts
+
+Everything below is load-bearing when writing code against this library:
+
+- **Pipe protocol**: a client is a plain options object with a `pipe` method (`pipe`/`add`/`with` are aliases). Config functions (`url`, `jsonBody`, `retry`, …), middlewares, executors, and your own helpers are all just pipeable functions `(o, ...args) => o'` — no class hierarchy, no registration step, pipes are immutable.
+- **Three executors**: `fetch(o)` resolves the raw `Response` and **never throws on status**; `fetchData(o)` resolves the reader's parsed data and throws `HTTPError` on non-2xx (opaque `no-cors` responses excepted); `fetchJSON(o)` adds the `json` reader itself.
+- **Four typed error classes** exported from the root: `HTTPError` (`.response`, `.request?`, `.data?`), `NetworkError` (transport `TypeError`s, `.url?`, `.cause`), `TimeoutError`, `ValidationError` (`.issues`, `.data`). All implement `toJSON()`, so `JSON.stringify(err)` survives SSR/worker boundaries.
+- **`mapError(o, mapper)`**: last-hop transformation of every rejection; `retry` always sees the original error and the raw `fetch()` executor bypasses it.
+- **Middleware with declarative positioning**: middlewares are `(fetchFn, instance) => fetchFn`, added via `use(o, mw)` as a bare function or `{ name, outer, inner, middleware }`. `outer: X` wraps X, `inner: X` is wrapped by X, `NORMAL` anchors the default group. Duplicate names and cycles throw at execution time.
+- **Built-in capabilities** (each opt-in, tree-shaking-isolated): `retry(o, max, opts?)` — method/status-aware with capped `Retry-After`, jittered backoff, `shouldRetry` predicate; `timeout(o, ms)` — lazy per-attempt budget; `totalTimeout(o, ms)` — one budget over all attempts and backoff; `validate(o, schema)` — Standard Schema v1 (Zod/Valibot/ArkType, zero adapters), output type flows into `fetchData`; `events(o, onEvent?)` — SSE reader with full wire-format framing resolving `SSEEvent[]`; `withProgress({ onDownloadProgress, onUploadProgress, wrapBody })`; `withAuth(credentials | () => token, type?)` — supplier re-evaluated on every attempt for rotating tokens.
+- **Readers**: `json` (response-side only, empty bodies resolve `undefined`), `text`, `blob`, `arrayBuffer`, `formData`, `events`, and generic `data(o, reader)` — the reader's return type drives `fetchData`'s inference; query keys are tracked at the type level.
+- **Runtime requirements**: Node.js >= 20.3 (uses `AbortSignal.any` and `AbortSignal.timeout`) or any modern browser shipping both, plus native `fetch` (injectable via `create({ fetch })`). `sideEffects: false`.
+
+## Docs
+
+- [README](./README.md): Complete API reference — pipe protocol, full config-functions table (URL/query builders, method sugar `get`/`post`/`put`/`patch`/`del`/`head`, headers/auth/body), executors comparison, error classes with `toJSON()` shapes, `mapError`, retry decision matrix and `RetryOptions`, `timeout`/`totalTimeout`, `validate`, middleware positioning rules, `withProgress`/`withAuth`, type inference, and the utilities table (`toFetchParams`, `sortMiddlewares`, `createRetry`, `createRetryBase`, `createQuery`, `NORMAL`).
+- [Recipes](./docs/recipes.md): TanStack Query/SWR integration (retry-layer split, cancellation), 401 → refresh → replay middleware, Nuxt/Vue plugin pattern, Next.js RSC/route handlers, msw/vitest testing (global patch or `create({ fetch })` injection), Zod 4/Valibot zero-adapter validation, SSE streaming with the `Last-Event-ID` reconnect loop and timeout-vs-stream semantics.
+- [OpenAPI-typed clients](./docs/openapi.md): grafting `openapi-typescript`'s generated `paths` types onto the pipe via a ~60-line helper you own (`typedUrl`/`typedMethod`/`typedJsonBody`/`typedJson`), pairing with `validate` for runtime enforcement, and how it differs from `openapi-fetch`.
+- [Comparison](./COMPARISON.md): 19-dimension matrix vs ky 2.0.2 / ofetch 1.5.1 / wretch 3.0.9 / up-fetch 2.6.0 — API style, extension models, dynamic auth, error semantics and serialization, schema validation, retry/total timeout, SSE, progress, tree-shaking, dependencies, Node.js baselines — plus a "how to choose" summary.
+- [Migration guide](./MIGRATION.md): breaking/behavior/additive changes for v0.3 → v0.4 → v0.5 (`HTTPError` semantics, `NetworkError`, retry defaults, lazy `timeout`, `withAuth` headers instance), plus a full "Migrating from ky" chapter mapping every ky 2.0 option and hook to its fetch-fun equivalent.

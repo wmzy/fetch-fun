@@ -267,9 +267,9 @@ fetch-fun is not a drop-in ky replacement: where ky configures an instance with 
 | `ky.create(defaults)` | `create(o)` | Fresh client from a defaults object. |
 | `ky.extend(defaults)` | `client.pipe(...)` | Derives a new client inheriting everything; pipes are immutable, so the parent is never mutated. Merge rules differ per pipe: `query` / `headers` replace, `mergeQuery` / `header` merge. ky's `extend` deep-merges options and appends hooks; its `replaceOption` escape hatch is unnecessary here — pick the replacing pipe explicitly. |
 | `prefixUrl` (1.x) / `prefix` (2.0) | `baseUrl` | Splice semantics match: trailing / leading slashes collapse at the join, leading-slash inputs included. |
-| `baseUrl` (2.0) | `baseUrl` | Different algorithm: ky *resolves* the input as a relative URL (`'/users'` against `https://x/api/` → `https://x/users`); fetch-fun always *splices* (`'/users'` → `https://x/api/users`). |
+| `baseUrl` (2.0) | — | No direct equivalent. ky *resolves* the input as a relative URL (`new URL(input, base)`: a leading slash goes origin-root, `../` collapses, the base may carry a query), while fetch-fun's `baseUrl` always *splices* (`'/users'` against `https://x/api/` → `https://x/api/users`). Pre-resolve with `new URL()` and pass the absolute `url` — see [URL building](#url-building-splice-vs-resolve). |
 | `json` (request option) | `jsonBody(o, data)` | Or the method sugar: `post(o, '/users', payload)` sets method, URL, and JSON body in one step. |
-| `searchParams` | `query` / `mergeQuery` / `querySet` / `queryAppend` | `query` replaces, `mergeQuery` merges; values accept `string \| number \| boolean`. |
+| `searchParams` | `query` / `mergeQuery` / `querySet` / `queryAppend` | ky merges with the query already on the input URL (and `extend` accumulates instances' params); fetch-fun splits that into `mergeQuery` (append-merge — the closest match) and `query` (replace, ky's `replaceOption`). See [Query parameters](#query-parameters-merge-vs-replace). |
 | `retry.limit` | `retry(o, maxRetries)` | **Default gap: ky retries twice out of the box; fetch-fun never retries unless `retry` is piped.** |
 | `retry.methods` | `RetryOptions.methods` | Both default to idempotent methods; ky additionally lists `QUERY`. |
 | `retry.statusCodes` | `RetryOptions.statuses` | ky defaults to `408 413 429 500 502 503 504`; fetch-fun to `408 425 429 500 502 503 504` — `425` instead of `413` (`413` is never retried in fetch-fun). |
@@ -277,7 +277,7 @@ fetch-fun is not a drop-in ky replacement: where ky configures an instance with 
 | `retry.afterStatusCodes` + `retry.maxRetryAfter` | `respectRetryAfter` + `maxRetryAfter` | ky honors `Retry-After` (plus rate-limit headers) only for `afterStatusCodes` (`413 429 503`) and defaults its cap to `Infinity`. fetch-fun honors `Retry-After` (seconds or HTTP-date) on any retry and defaults the cap to `30000` ms. |
 | `retry.retryOnTimeout` | — | Timeouts are ordinary retryable rejections in fetch-fun — there is no separate switch (opt out via `shouldRetry`). ky defaults to *not* retrying timeouts. |
 | `retry.shouldRetry` | `RetryOptions.shouldRetry` | Both replace the built-in retry decisions; fetch-fun's hard rules still apply first (method gate, `maxRetries` budget, `ValidationError` never retried). |
-| `hooks.init` | any pipe | Every config function already receives the options object — writing one *is* the init hook. |
+| `hooks.init` | pipe a config function, or a middleware via `use` | Config functions are pure and pipes immutable, so "reset / derive per-request state" is just piping at the call site; a middleware covers the must-run-on-every-request cases. See [Hooks](#hooks--middlewares-and-maperror). |
 | `hooks.beforeRequest` | middleware via `use` | A middleware wraps `(input, init)` before fetch: rewrite URL / headers, or return a `Response` yourself to short-circuit (ky's mock / cache pattern). |
 | `hooks.afterResponse` | `mapResponse(o, mapper)` or a middleware | Inspect or replace the `Response`. ky's `ky.retry(...)` force-retry maps to a `shouldRetry` predicate. |
 | `hooks.beforeRetry` | `createRetryBase(beforeRetry)` | Fully custom retry loop: `(attempt, error, o) => Promise<void>`; reject to stop (ky's `ky.stop` symbol becomes a plain rejection). |
@@ -298,11 +298,11 @@ fetch-fun is not a drop-in ky replacement: where ky configures an instance with 
 
 ```typescript
 // ky 2.0: instances with defaults; extend() inherits and deep-merges
-const api = ky.create({
+const kyApi = ky.create({
   baseUrl: 'https://api.example.com',
   headers: { accept: 'application/json' },
 });
-const usersApi = api.extend({ prefix: '/users' });
+const kyUsersApi = kyApi.extend({ prefix: '/users' });
 
 // fetch-fun: create() + pipes; derived clients inherit immutably
 const api = ff
@@ -321,11 +321,96 @@ client.pipe(ff.url, 'https://other.example.com/x'); // bypasses baseUrl entirely
 
 - An absolute `url` (own protocol) bypasses `baseUrl` in both libraries.
 - A protocol-relative `url` (`//cdn.example.com/x`) passes through untouched, inheriting the page's protocol — ky 2.0 instead resolves it against its `baseUrl`.
-- `../` segments are preserved verbatim: the join splices strings, it does not resolve URLs.
+
+### URL building: splice vs resolve
+
+ky 2.0 split the single 1.x `prefixUrl` into two options with different algorithms; fetch-fun's `baseUrl` is the splicing one, and there is no resolving mode. All cells below live on the origin `https://x`:
+
+| input | ky 2.0 `prefix: '/api'` | ky 2.0 `baseUrl: 'https://x/api/'` | fetch-fun `baseUrl: 'https://x/api'` |
+| --- | --- | --- | --- |
+| `users` | `https://x/api/users` | `https://x/api/users` | `https://x/api/users` |
+| `/users` | `https://x/api/users` | `https://x/users` | `https://x/api/users` |
+| `../users` | `https://x/users` | `https://x/users` | `https://x/api/../users` |
+
+- **Leading slash:** ky's `baseUrl` treats it as origin-root (the base's path is discarded); `prefix` and fetch-fun both trim it at the join and append anyway.
+- **Dot segments:** both ky modes end in standard URL resolution, so `../` collapses; fetch-fun splices strings and passes dot segments through — the server receives `api/../users` verbatim.
+- **Query on the base:** a `baseUrl` carrying its own query (`https://x/api?v=1`) is legal in ky and broken in fetch-fun (the splice would corrupt the path). Move those params into `query` / `mergeQuery` instead — they are appended after any query already on the `url`.
+
+If your ky code depends on resolution — `../` collapsing, origin-root leading slashes, or a query-carrying base — pre-resolve it yourself and pass the absolute href as `url`:
+
+```typescript
+// ky 2.0: URL resolution does the work
+await ky('../avatars/7.png', { baseUrl: 'https://x/api/users/42/' });
+//=> https://x/api/avatars/7.png
+
+// fetch-fun: resolve yourself, then pass the absolute URL
+const href = new URL('../avatars/7.png', 'https://x/api/users/42/').href;
+await client.pipe(ff.url, href).pipe(ff.fetch);
+```
+
+### Query parameters: merge vs replace
+
+ky's `searchParams` always merges: entries are appended to the query already on the input URL, and `ky.extend` accumulates instance defaults the same append way (with `replaceOption` as the opt-out). fetch-fun makes each behavior a separate pipe:
+
+- `mergeQuery` — append-merge, the closest match for ky: previously piped params are kept and new entries appended, so per-call params layer over client-level params exactly like ky's option merging.
+- `query` — replace: drops previously piped params and starts fresh (ky's `replaceOption`).
+- `querySet(o, name, value)` / `queryAppend(o, name, value)` — single-key versions (`set` overwrites that key, `append` allows duplicates); ky needs an object rebuild for the same effect.
+
+A query written inside the `url` string survives both: piped params are appended after it with `&`, mirroring how ky merges into the input URL.
+
+```typescript
+// ky 2.0: searchParams merges with the URL's own query, and extend() accumulates
+const kyApi = ky.create({ searchParams: { api: 'v1' } });
+await kyApi.get('https://x/api/users?team=a', { searchParams: { page: 2 } });
+// team=a, api=v1, and page=2 all reach the URL
+
+// fetch-fun: the same layering, explicit — query for client defaults, mergeQuery per call
+const api = ff
+  .create({ baseUrl: 'https://x/api' })
+  .pipe(ff.query, { api: 'v1' });
+await api
+  .pipe(ff.url, 'users?team=a')
+  .pipe(ff.mergeQuery, { page: 2 })
+  .pipe(ff.fetch);
+//=> https://x/api/users?team=a&api=v1&page=2
+```
+
+ky's trick of deleting a parameter by setting its value to `undefined` has no equivalent — rebuild the params with `query` (or filter a `URLSearchParams` yourself) instead.
 
 ### Hooks → middlewares and `mapError`
 
-Hooks become middlewares — functions `(fetchFn, options) => fetchFn`, added with `use` — and `beforeError` becomes `mapError`:
+Hooks become middlewares — functions `(fetchFn, options) => fetchFn`, added with `use` — and `beforeError` becomes `mapError`. ky 2.0's `init` hook (which synchronously mutates the options object as each request is created) has two translations:
+
+```typescript
+// ky 2.0: derive per-request state by mutating the options at init time
+const kyApi = ky.extend({
+  hooks: {
+    init: [
+      (options) => {
+        options.searchParams = { apiKey: getApiKey() };
+      },
+    ],
+  },
+});
+
+// fetch-fun, option A: pipe a config function at the call site — it
+// evaluates when piped, so state is derived per request
+const res = await client
+  .pipe(ff.query, { apiKey: getApiKey() })
+  .pipe(ff.url, '/users')
+  .pipe(ff.fetch);
+
+// fetch-fun, option B: a middleware, when it must apply to every request
+// without each call site opting in
+const withApiKey: ff.MiddlewareFn = (f) => (input, init) => {
+  const headers = new Headers(init?.headers);
+  headers.set('X-Api-Key', getApiKey());
+  return f(input, { ...init, headers });
+};
+const api = client.pipe(ff.use, withApiKey);
+```
+
+Config functions are pure — no in-place mutation of the options object — and pipes are immutable, so a shared client is safely reused across requests; the init hook's typical job (resetting or deriving per-request state) is exactly what a pipe at the call site expresses.
 
 ```typescript
 // ky: mutate the outgoing request before it is sent

@@ -566,6 +566,78 @@ describe('Error Handling Integration Tests', () => {
       expect(timeoutErr.message).toBe('Request timed out');
       expect(timeoutErr).toBeInstanceOf(Error);
     });
+
+    it('serializes every error class to a plain object via toJSON', () => {
+      // A Response built by the constructor has url '' (only fetch-returned
+      // responses carry the final URL) — the field is passed through as-is.
+      const httpErr = new HTTPError(
+        new Response(null, { status: 404, statusText: 'Not Found' })
+      );
+      httpErr.data = { message: 'Not Found' };
+      expect(JSON.parse(JSON.stringify(httpErr))).toEqual({
+        name: 'HTTPError',
+        message: 'GET  failed with status 404 Not Found',
+        status: 404,
+        url: '',
+        data: { message: 'Not Found' },
+      });
+      // No live Response/Request bodies leak into the serialized form.
+      expect(JSON.stringify(httpErr)).not.toContain('"response"');
+      expect(JSON.stringify(httpErr)).not.toContain('"request"');
+      // toJSON lives on the prototype — no other property becomes enumerable.
+      expect(Object.prototype.propertyIsEnumerable.call(httpErr, 'toJSON')).toBe(false);
+
+      const networkErr = new NetworkError('https://api.example.com/x', {
+        method: 'POST',
+        cause: new TypeError('fetch failed'),
+      });
+      expect(JSON.parse(JSON.stringify(networkErr))).toEqual({
+        name: 'NetworkError',
+        message: 'POST https://api.example.com/x failed: network error',
+        url: 'https://api.example.com/x',
+        cause: { name: 'TypeError', message: 'fetch failed' },
+      });
+      // Non-Error causes are dropped instead of leaking opaque values.
+      const stringCause = new NetworkError('https://api.example.com/y', {
+        cause: 'just a string',
+      });
+      expect(JSON.parse(JSON.stringify(stringCause)).cause).toBeUndefined();
+
+      const timeoutErr = new TimeoutError('Request timed out after 30ms', {
+        cause: new DOMException('signal timed out', 'TimeoutError'),
+      });
+      expect(JSON.parse(JSON.stringify(timeoutErr))).toEqual({
+        name: 'TimeoutError',
+        message: 'Request timed out after 30ms',
+        cause: { name: 'TimeoutError', message: 'signal timed out' },
+      });
+
+      const validationErr = new ValidationError(
+        [{ message: 'Expected string, got number' }],
+        42
+      );
+      expect(JSON.parse(JSON.stringify(validationErr))).toEqual({
+        name: 'ValidationError',
+        message: 'Expected string, got number',
+        issues: [{ message: 'Expected string, got number' }],
+        data: 42,
+      });
+    });
+
+    it('omits undefined data from the serialized HTTPError shape', () => {
+      const httpErr = new HTTPError(
+        new Response(null, { status: 500, statusText: '' }),
+        new Request('https://example.com/y')
+      );
+      const parsed = JSON.parse(JSON.stringify(httpErr));
+      expect(parsed).toEqual({
+        name: 'HTTPError',
+        message: 'GET https://example.com/y failed with status 500',
+        status: 500,
+        url: '',
+      });
+      expect(parsed.data).toBeUndefined();
+    });
   });
 
   describe('schema validation (Standard Schema v1)', () => {

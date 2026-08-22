@@ -70,14 +70,14 @@
         "@size-limit/esbuild"
       ],
       "gzip": true,
-      "limit": "20 KB"
+      "limit": "8 KB"
     },
     {
       "name": "minimal usage: create/url/fetchJSON/json (min+gz)",
       "path": "src/index.ts",
       "import": "{ create, url, fetchJSON, json }",
       "gzip": true,
-      "limit": "10 KB"
+      "limit": "4 KB"
     }
   ],
   "lint-staged": {

@@ -8,27 +8,21 @@ A functional fetch toolkit built on one composition protocol: **any function of 
 
 ## Why fetch-fun (vs ky / ofetch / wretch / up-fetch)
 
-| Dimension | fetch-fun | ky | ofetch | wretch | up-fetch |
-| --- | --- | --- | --- | --- | --- |
-| API style | Plain pipeable functions over a plain options object (`client.pipe(url, '/x')`) | Options-object instance + hooks | `$fetch(url, options)` wrapper fn | Fluent method chain (`.url().get()`) | `upfetch(url, options)` wrapper built from `up(fetch, defaults)` |
-| Method sugar | `get`/`post`/`put`/`patch`/`del`/`head` — plain config fns `(o, path?, json?)`, composable like everything else | `ky.get(url, { json })` shortcuts on the instance | `$fetch(url, { method, body })` | `.get()`, `.post(json)` chain verbs | None — plain `method` option, same as fetch |
-| Extension model | Any `(o, ...args) => o'` function; middlewares with declarative ordering (`outer`/`inner`/`NORMAL`) | `hooks` (beforeRequest/afterResponse) | Request/response interceptors | Middleware chain with index-based placement | Lifecycle hooks (`onRequest`/`onSuccess`/`onError`/`onRetry`) |
-| Request body | `body(o, data)` accepts any `BodyInit \| null`; `jsonBody` stringifies and sets `Content-Type` | `json` option; `body` passed through to fetch | `body` (plain objects auto-serialized) | `.body()` / `.json()` | `body` (plain objects auto-serialized; custom `serializeBody`) |
-| Query params | Values `string \| number \| boolean` (runtime-normalized); keys/values tracked as literal types | `searchParams` option | `query`/`params` (ufo serialization) | QueryString addon | `params` object (custom `serializeParams`) |
-| Type inference | Reader return type flows into `fetchData`; `pipe(validate, schema)` converges to the schema's Standard Schema output; query keys tracked at type level | Generics at call sites; schema output via `.json(schema)` | Generics at call sites | Generics on the chain | Schema output type drives the response type |
-| Error semantics | `fetch` never throws on non-2xx; `fetchData`/`fetchJSON` throw `HTTPError` (`.response`/`.request`/`.data`); typed `TimeoutError`, `NetworkError`, `ValidationError` | Always throws on non-2xx | `FetchError` (`error.data`) + `onResponseError` interceptors | Errors surfaced to `.error()` handlers | Throws `ResponseError` on non-2xx (`reject` opt-out → error-as-value); `ResponseValidationError` on schema failure |
-| Network errors | Transport `TypeError`s wrapped as typed `NetworkError` (`url?`, original as `cause`); user middleware errors untouched; still retryable | Wrapped in `NetworkError` | Wrapped in `FetchError` | Native errors | No typed wrapper documented |
-| Error transformation | `mapError(o, mapper)` — one last-hop mapper through which **every** error type passes; the mapper's return value is what gets thrown | `beforeError` hooks | `onResponseError` interceptors | `.error()` handlers | `parseRejected` |
-| Schema validation | Built-in, Standard Schema v1 (Zod/Valibot/ArkType, duck-typed, zero adapters) | Built-in, Standard Schema (`.json(schema)` throws `SchemaValidationError`) | Bring your own via interceptors | Bring your own via middlewares | Built-in, Standard Schema (Zod/Valibot/ArkType) |
-| Retry policy | Method-aware (idempotency), status-aware, exp. backoff + jitter, per-attempt timeout; `Retry-After` honored **and capped** (`maxRetryAfter`); `shouldRetry` predicate for response/error-driven decisions | Status/method filter, backoff, `Retry-After` for 413/429/503 | Retry count/delay + status filter | Bring-your-own retry middleware | `retry: { attempts, delay, when }` — attempts/delay may be functions of the request/attempt |
-| Total timeout | `totalTimeout(ms)` — whole-request budget spanning all retries + backoff; lazy; composes with per-attempt `timeout` | `totalTimeout` option | — | — | — |
-| Progress | Built-in `withProgress`: per-chunk download progress (`percent`/`transferred`/`total`), upload progress for `ReadableStream` bodies — or for any other body shape via opt-in `wrapBody` (real `total`, so `percent` works) | `onDownloadProgress` / `onUploadProgress` | — | Progress addon | Upload + download via `onRequestStreaming`/`onResponseStreaming` |
-| Tree-shaking | 0 deps + `sideEffects: false` + every helper an independent named export — bundlers keep only what you import (`url` + `fetchJSON` never pull in `retry`/`progress`/`validate`; full client ≈ 5 kB min+gzip, a `create`+`url`+`fetchJSON`+`json` app ≈ 2 kB — enforced by CI) | Single factory entry — retry, hooks, and progress ship with every import | `$fetch` wrapper + bundled utilities — one unit, little to shake | Core + addons — unused addons stay out of the bundle | One `up()` builder — the whole client ships as a unit |
-| Dependencies | **0** | 0 | Small bundled utility set | 0 | 0 |
-| Node.js baseline | `>= 20.3` — only requires `AbortSignal.any` / `AbortSignal.timeout` | `22+` (v2) | cross-runtime (v1, via `node-fetch-native`) | `22+` (v3) | modern browsers + Node |
+| Dimension | fetch-fun | ky / ofetch / wretch / up-fetch |
+| --- | --- | --- |
+| Composition model | Everything is a plain pipeable function `(o, ...args) => o'` — config functions, executors, and your own helpers alike; middlewares order declaratively (`outer` / `inner` / `NORMAL`) | Instance options + hooks (ky), wrapper fn + interceptors (ofetch), fluent chain + addons (wretch), one builder fn + lifecycle hooks (up-fetch) |
+| Tree-shaking | 0 deps, `sideEffects: false`, independent named exports — **enforced by CI** (size-limit + tree-shaking checks): ≈2 kB min+gzip for a typical app, ≈5 kB for the full client | Mostly single-entry units — ky ships retry/hooks/progress with every import, ofetch and up-fetch (~1.6 kB) bundle as one unit; only wretch keeps unused addons out |
+| Errors | `fetch` never throws on status; typed `HTTPError` / `NetworkError` / `TimeoutError` / `ValidationError`, all JSON-serializable via `toJSON()`; `mapError` last-hop transformation | The others throw on non-2xx by default with varying escape hatches; typed classes, serialization, and transformation differ per library |
+| Type inference | The reader's return type flows into `fetchData`; `validate` converges to the schema's Standard Schema output; query keys tracked at type level | Generics at call sites; schema-output typing in ky and up-fetch |
+| Retry & timeouts | Method/status-aware retry with capped `Retry-After` and jittered backoff, lazy per-attempt `timeout`, whole-request `totalTimeout` | Retry with backoff in ky/ofetch/up-fetch (bring-your-own in wretch); total-over-retries timeouts only in ky |
+| Built-in extras | SSE reader (`events` + per-frame `onEvent`), upload/download `withProgress`, dynamic auth suppliers (`withAuth(() => token)`) — each opt-in and tree-shaking-isolated | ofetch v2 (alpha) auto-detects event streams; up-fetch has streaming hooks; ky ships progress but no SSE; wretch covers both via addons |
+
+That table is the short version. The full 19-dimension matrix — error serialization, dynamic auth, query serialization, progress models, Node.js baselines, against exact competitor versions (ky 2.0.2, ofetch 1.5.1 / v2 alpha, wretch 3.0.9, up-fetch 2.6.0) — lives in [COMPARISON.md](COMPARISON.md).
 
 ## Table of Contents
 
+- [Why fetch-fun](#why-fetch-fun-vs-ky--ofetch--wretch--up-fetch)
+  - [Full comparison matrix](COMPARISON.md)
 - [Requirements](#requirements)
 - [Installation](#installation)
 - [Quick Start](#quick-start)
@@ -40,6 +34,7 @@ A functional fetch toolkit built on one composition protocol: **any function of 
   - [validate — Standard Schema validation](#validate--standard-schema-validation)
 - [Executors: fetch / fetchData / fetchJSON](#executors-fetch--fetchdata--fetchjson)
 - [Errors](#errors)
+  - [Serializable errors (toJSON)](#serializable-errors-tojson)
   - [mapError — last-hop error transformation](#maperror--last-hop-error-transformation)
 - [Middleware and the Positioning System](#middleware-and-the-positioning-system)
 - [Type Inference](#type-inference)
@@ -179,7 +174,8 @@ Every config function has the shape `(o, ...args) => o'` — it takes the curren
 | `text(o)` | Reader: read the body as text | — |
 | `blob(o)` | Reader: read the body as a `Blob` | — |
 | `arrayBuffer(o)` | Reader: read the body as an `ArrayBuffer` | — |
-| `formData(o)` | Reader: read the body as `FormData` | — |
+| `formData(o)` | Reader: read the body as a `FormData` | — |
+| `events(o, onEvent?)` | Reader: parse the body as a Server-Sent Events stream — each frame is passed to `onEvent` the moment its terminating blank line arrives, and `fetchData` resolves to the complete `SSEEvent[]` once the stream ends. Full wire-format framing: leading BOM, `\r\n`/`\r`/`\n` line endings, `:` comments, multi-line `data:` (joined with `\n`), `id:`, numeric `retry:`, and a trailing frame missing its blank line. Non-2xx responses still throw `HTTPError`; reconnection policy stays with you (see [docs/recipes.md](docs/recipes.md) for the Last-Event-ID loop) | `onEvent?: (e: SSEEvent) => void` — annotate the parameter (`(e: SSEEvent) => …`), as with `json`'s parser, so the generic pipe overload applies |
 | `validate(o, schema)` | Attach a Standard Schema v1 schema; parsed data is validated and replaced by its output | `schema: StandardSchema` |
 | `use(o, mw)` | Add one middleware (function or `{ name, outer, inner, middleware }` config) | `mw: MiddlewareInput` |
 | `middlewares(o, list)` | **Replace** the middleware list | `list: MiddlewareInput[]` |
@@ -308,7 +304,7 @@ On success a transformed/defaulted schema output replaces the stored data; on fa
 | --- | --- | --- | --- |
 | Non-2xx status | Resolves the `Response` — **never throws on status** | Throws `HTTPError` | Throws `HTTPError` |
 | Returns | `Promise<Response>` | `Promise<T>` (parsed data) | `Promise<T>` (parsed JSON) |
-| Reader needed | No | Yes — configure `json` / `text` / `blob` / `data` first | No — `fetchJSON` adds the `json` reader itself |
+| Reader needed | No | Yes — configure `json` / `text` / `blob` / `events` / `data` first | No — `fetchJSON` adds the `json` reader itself |
 | Transport / timeout / validation errors | Can still throw `NetworkError` / `TimeoutError`; `ValidationError` on 2xx | Same + `HTTPError` | Same + `HTTPError` |
 
 ```typescript
@@ -353,6 +349,21 @@ try {
   else if (e instanceof ff.ValidationError) { /* schema failed: e.issues, e.data */ }
 }
 ```
+
+### Serializable errors (toJSON)
+
+All four error classes implement `toJSON()`, so `JSON.stringify(err)` emits a plain, meaningful object instead of `{}` — the shape survives any JSON boundary: SSR → client hydration, web worker → main thread, `postMessage`, test snapshots. No live `Response`/`Request` reference is carried across:
+
+```typescript
+// catch (e) — any of the four classes
+JSON.stringify(e);
+// HTTPError       → { name, message, status, url, data }
+// NetworkError    → { name, message, url?, cause?: { name, message } }
+// TimeoutError    → { name, message, cause?: { name, message } }
+// ValidationError → { name, message, issues, data }
+```
+
+On the receiving side, branch on the `name` field (`'HTTPError'` | `'NetworkError'` | `'TimeoutError'` | `'ValidationError'`). An `Error` cause is reduced to `{ name, message }`; anything else is dropped (`undefined`) so the object always serializes.
 
 ### mapError — last-hop error transformation
 
@@ -421,7 +432,7 @@ Built-in middleware factories ship with reserved `builtin:*` names and positions
 | --- | --- | --- |
 | `withRetry(maxRetries, opts?)` | `builtin:retry` | — |
 | `withTimeout(ms)` | `builtin:timeout` | `inner` of `builtin:retry` — every retry attempt gets a fresh budget |
-| `withAuth(token)` | `builtin:auth` | `inner` of `builtin:retry` — each attempt re-applies the `Authorization: Bearer <token>` header |
+| `withAuth(credentials, type?)` | `builtin:auth` | `inner` of `builtin:retry` — each attempt (re)applies the `Authorization` header; `credentials` may be a string or a supplier `() => string \| Promise<string>` re-evaluated on every attempt |
 | `withLogging(logger?)` | `builtin:logging` | `outer` of `NORMAL` — logs request/response/error with duration |
 | `withProgress(opts?)` | `builtin:progress` | `inner` of `NORMAL` — inside the default group (and therefore inside retry): every (re)try reports its own progress from zero |
 
@@ -430,10 +441,12 @@ const res = await client
   .pipe(ff.use, ff.withLogging())     // outermost of the NORMAL group
   .pipe(ff.use, ff.withRetry(3))      // 'builtin:retry'
   .pipe(ff.use, ff.withTimeout(5000)) // inner of retry → per-attempt budget
-  .pipe(ff.use, ff.withAuth(jwt))     // inner of retry → auth on every attempt
+  .pipe(ff.use, ff.withAuth(() => tokenStore.get())) // inner of retry → token re-read per attempt
   .pipe(ff.url, '/flaky')
   .pipe(ff.fetch);
 ```
+
+`withAuth` also accepts a **token supplier** in place of a static string: `withAuth(() => store.getToken())`, or an async `withAuth(async () => await refreshJwt())`. The supplier is awaited once per request — and again on every retry attempt — so rotated or refreshed tokens are picked up without writing a custom middleware. As with the config-side `auth(o, type, credentials)`, the header value is the literal `${type} ${credentials}` with no extra encoding (pass pre-encoded base64 for `Basic`).
 
 `withProgress` reports progress while bodies stream. Downloads are observed by piping `response.body` through a counting `TransformStream`; callbacks fire per chunk — after `fetch` has already resolved, so consume the body to drive them:
 
@@ -524,7 +537,7 @@ Short, focused recipes — TanStack Query / SWR, 401 → refresh → retry, Nuxt
 | `createQuery(input)` | Typed `URLSearchParams` factory (object / tuple array / string) |
 | `NORMAL` | Symbol anchoring the default middleware position |
 
-Commonly used types: `Options`, `Fetchable`, `Client`, `Method`, `Pipe`, `MiddlewareFn`, `MiddlewareInput`, `MiddlewareConfig`, `MiddlewareName`, `QueryType`, `TypedURLSearchParams`, `StandardSchema`, `RetryOptions`, `MapErrorContext`, `ProgressOptions`, `ProgressState`, `NetworkError`.
+Commonly used types: `Options`, `Fetchable`, `Client`, `Method`, `Pipe`, `MiddlewareFn`, `MiddlewareInput`, `MiddlewareConfig`, `MiddlewareName`, `QueryType`, `TypedURLSearchParams`, `StandardSchema`, `RetryOptions`, `MapErrorContext`, `ProgressOptions`, `ProgressState`, `NetworkError`, `SSEEvent` (a parsed SSE frame: `{ event, data, id?, retry? }`).
 
 ## Versioning
 
