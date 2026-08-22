@@ -1,4 +1,7 @@
+import type { MiddlewareFn, StandardSchema } from '@/types';
+
 import { afterEach, describe, it, vi, expect } from 'vitest';
+
 import {
   create,
   url,
@@ -18,7 +21,6 @@ import {
   TimeoutError,
   ValidationError,
 } from '@/index';
-import type { MiddlewareFn, StandardSchema } from '@/types';
 import { getData } from '@/util';
 
 describe('Error Handling Integration Tests', () => {

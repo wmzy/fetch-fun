@@ -28,22 +28,4 @@ export default [
       'react-hooks/rules-of-hooks': 'off',
     },
   },
-  {
-    files: ['**/*.{js,jsx,cjs,mjs,ts,tsx,cts,mts}'],
-    // eslint-plugin-import@2.32 is incompatible with ESLint 10: import/order
-    // calls sourceCode.getTokenOrCommentAfter, an API removed in ESLint 10.
-    // Disable it until tools-config ships a compatible plugin version.
-    rules: {
-      'import/order': 'off',
-    },
-  },
-  {
-    files: ['**/*.{ts,tsx,cts,mts}'],
-    languageOptions: {
-      parserOptions: {
-        projectService: true,
-        tsconfigRootDir: import.meta.dirname,
-      },
-    },
-  },
 ];

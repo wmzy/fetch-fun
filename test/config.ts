@@ -1,4 +1,12 @@
+import type {
+  MiddlewareFn,
+  Options,
+  StandardSchema,
+  TypedURLSearchParams,
+} from '@/index';
+
 import { describe, it, should, expect, vi, expectTypeOf } from 'vitest';
+
 import {
   url,
   appendUrl,
@@ -45,12 +53,6 @@ import {
   fetch as doFetch,
   toFetchParams,
  TimeoutError } from '@/index';
-import type {
-  MiddlewareFn,
-  Options,
-  StandardSchema,
-  TypedURLSearchParams,
-} from '@/index';
 import { mapErrorSymbol, validateSymbol } from '@/constants';
 import { getData, setData } from '@/util';
 

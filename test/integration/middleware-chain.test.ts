@@ -1,4 +1,7 @@
+import type { MiddlewareFn } from '@/types';
+
 import { afterEach, describe, it, vi, expect } from 'vitest';
+
 import {
   create,
   url,
@@ -12,7 +15,6 @@ import {
   withLogging,
   HTTPError,
 } from '@/index';
-import type { MiddlewareFn } from '@/types';
 import { getData } from '@/util';
 
 describe('Middleware Chain Integration Tests', () => {

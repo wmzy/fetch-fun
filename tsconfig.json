@@ -2,9 +2,8 @@
   "extends": "tools-config/typescript",
   "compilerOptions": {
     /* Paths */
-    "baseUrl": ".",
     "paths": {
-      "@/*": ["src/*"]
+      "@/*": ["./src/*"]
     },
   },
 }

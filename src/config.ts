@@ -1,4 +1,3 @@
-import { createRetry, normalizeMiddleware } from './middleware';
 import type { RetryOptions } from './middleware';
 import type {
   AppendQueryType,
@@ -18,6 +17,8 @@ import type {
   StandardSchema,
   TypedURLSearchParams,
 } from './types';
+
+import { createRetry, normalizeMiddleware } from './middleware';
 import { mapErrorSymbol, readDataSymbol, validateSymbol } from './constants';
 import { getData, hasData, setData } from './util';
 import { ValidationError } from './errors';

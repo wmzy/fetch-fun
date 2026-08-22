@@ -6,6 +6,7 @@ import type {
   MiddlewareInput,
   MiddlewareName,
 } from './types';
+
 import { NORMAL } from './types';
 import { sleep, retry, backoffDelay, isNotRetryError, applyTimeout, parseRetryAfter } from './util';
 import { HTTPError, ValidationError } from './errors';

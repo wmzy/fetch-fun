@@ -1,4 +1,7 @@
+import type { MiddlewareFn } from '../../src/types';
+
 import { afterEach, beforeEach, describe, it, vi, expect } from 'vitest';
+
 import {
   create,
   url,
@@ -13,7 +16,6 @@ import {
   method,
   jsonBody,
 } from '@/index';
-import type { MiddlewareFn } from '../../src/types';
 import { getData } from '@/util';
 
 describe('Adapters Integration Tests', () => {

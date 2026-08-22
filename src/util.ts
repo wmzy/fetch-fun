@@ -1,3 +1,5 @@
+import type { TypedURLSearchParams } from './types';
+
 import { notRetryErrorSymbol } from './constants';
 import { TimeoutError } from './errors';
 
@@ -433,8 +435,6 @@ export type TupleArrayToRecord<
 };
 
 // ============ Typed URLSearchParams ============
-
-import type { TypedURLSearchParams } from './types';
 
 /**
  * Forces TypeScript to expand/simplify a type for better IDE display.

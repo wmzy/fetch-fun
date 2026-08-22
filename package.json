@@ -23,6 +23,7 @@
   },
   "scripts": {
     "commit": "lint-staged && git-cz -n",
+    "prepare": "husky",
     "build": "vite build && npm run build:types",
     "build:types": "tsc -p tsconfig.build.json && node scripts/gen-dmts.mjs",
     "dev": "vite",
@@ -81,9 +82,8 @@
     }
   ],
   "lint-staged": {
-    "*.js": [
-      "cross-env NODE_ENV=production eslint --fix",
-      "git add"
+    "*.{js,mjs,cjs,ts}": [
+      "eslint --fix"
     ]
   },
   "config": {
@@ -91,28 +91,22 @@
       "path": "./node_modules/cz-conventional-changelog"
     }
   },
-  "husky": {
-    "hooks": {
-      "pre-commit": "lint-staged"
-    }
-  },
   "devDependencies": {
     "@arethetypeswrong/cli": "^0.18.5",
     "@size-limit/esbuild": "^13.0.3",
     "@size-limit/file": "^13.0.3",
-    "@vitest/coverage-v8": "^4.0.18",
-    "commitizen": "^4.3.1",
-    "cross-env": "^10.1.0",
+    "@vitest/coverage-v8": "^4.1.11",
+    "commitizen": "^4.3.2",
     "cz-conventional-changelog": "^3.3.0",
-    "eslint": "^10.0.3",
+    "eslint": "^10.9.0",
     "husky": "^9.1.7",
-    "lint-staged": "^16.3.2",
+    "lint-staged": "^17.3.0",
     "publint": "^0.3.24",
     "size-limit": "^13.0.3",
-    "tools-config": "^0.2.3",
-    "typescript": "^5.9.3",
-    "typescript-eslint": "^8.56.1",
-    "vite": "^7.3.1",
-    "vitest": "^4.0.18"
+    "tools-config": "^0.3.0",
+    "typescript": "~6.0.3",
+    "typescript-eslint": "^8.67.0",
+    "vite": "^8.2.2",
+    "vitest": "^4.1.11"
   }
 }

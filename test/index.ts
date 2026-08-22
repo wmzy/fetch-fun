@@ -1,4 +1,5 @@
 import { describe, it, afterEach, vi, expect } from 'vitest';
+
 import * as ff from '@/index';
 
 const example = 'https://example.com';

@@ -1,4 +1,7 @@
+import type { MiddlewareFn } from '@/types';
+
 import { afterEach, describe, it, vi, expect } from 'vitest';
+
 import {
   create,
   url,
@@ -9,7 +12,6 @@ import {
   withLogging,
   NORMAL,
 } from '@/index';
-import type { MiddlewareFn } from '@/types';
 
 describe('Middleware Positioning Integration Tests', () => {
   afterEach(() => {

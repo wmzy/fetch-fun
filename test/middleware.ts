@@ -1,4 +1,7 @@
+import type { MiddlewareFn, MiddlewareEntry, StandardSchema } from '../src/types';
+
 import { afterEach, beforeEach, describe, it, vi, expect } from 'vitest';
+
 import {
   retry,
   create,
@@ -22,7 +25,6 @@ import {
   normalizeMiddleware,
   NORMAL,
  TimeoutError, HTTPError, ValidationError, NetworkError } from '@/index';
-import type { MiddlewareFn, MiddlewareEntry, StandardSchema } from '../src/types';
 import { asNotRetryError } from '@/util';
 
 describe('Middleware Tests', () => {

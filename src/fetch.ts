@@ -1,7 +1,3 @@
-import { json } from './config';
-import { mapErrorSymbol } from './constants';
-import { HTTPError, NetworkError } from './errors';
-import { sortMiddlewares } from './middleware';
 import type {
   Fetchable,
   MapErrorContext,
@@ -9,6 +5,11 @@ import type {
   ReaderData,
   ResolveData,
 } from './types';
+
+import { json } from './config';
+import { mapErrorSymbol } from './constants';
+import { HTTPError, NetworkError } from './errors';
+import { sortMiddlewares } from './middleware';
 import { getData, hasData, applyTimeout, applyTotalTimeout } from './util';
 
 /**

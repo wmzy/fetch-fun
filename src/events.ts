@@ -1,4 +1,5 @@
 import type { MiddlewareEntry, Options } from './types';
+
 import { readDataSymbol } from './constants';
 import { data } from './config';
 

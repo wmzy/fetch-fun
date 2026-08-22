@@ -1,4 +1,5 @@
 import { describe, it, vi, afterEach, expect } from 'vitest';
+
 import * as ff from '@/index';
 
 describe('Fetch Tests', () => {
