@@ -544,8 +544,15 @@ export function withTimeout(ms: number) {
  * is awaited on every request — including each retry attempt — so a rotated
  * or refreshed token is picked up without writing a custom middleware.
  *
+ * Empty credentials — an empty string, `null`, `undefined`, or a
+ * whitespace-only string — skip the header entirely: no empty `${type} `
+ * value is sent, and any `Authorization` inherited from upstream defaults
+ * (`header(...)`, a shared client, ...) is deleted so the request goes out
+ * unauthenticated. A logged-out supplier can simply return `undefined`.
+ *
  * @param credentials - Static credentials string, or a (possibly async)
- *   function returning the credentials string; invoked once per attempt
+ *   function returning the credentials string, `null`, or `undefined`;
+ *   invoked once per attempt; empty results skip the header
  * @param type - Authentication scheme ('Basic' | 'Bearer' | 'Digest' or any
  *   custom scheme string); defaults to 'Bearer' for backward compatibility
  * @returns A middleware configuration with proper naming and positioning
@@ -566,10 +573,15 @@ export function withTimeout(ms: number) {
  *
  * // Custom scheme
  * client.pipe(use, withAuth('ticket', 'HOBA'))
+ *
+ * // Logged-out supplier — undefined/''/null/whitespace skips the header
+ * client.pipe(use, withAuth(() => tokenStore.token))
  * ```
  */
 export function withAuth(
-  credentials: string | (() => string | Promise<string>),
+  credentials:
+    | string
+    | (() => string | null | undefined | Promise<string | null | undefined>),
   type: 'Basic' | 'Bearer' | 'Digest' | (string & {}) = 'Bearer'
 ) {
   return {
@@ -585,6 +597,14 @@ export function withAuth(
       // packed into a Headers instance. Native fetch accepts the
       // instance directly.
       const headers = new Headers(init?.headers);
+      if (cred == null || cred.trim() === '') {
+        // Empty credentials (empty string / null / undefined / whitespace):
+        // an empty `${type} ` header is never sent, and an Authorization
+        // inherited from upstream defaults is dropped so the request goes
+        // out unauthenticated.
+        headers.delete('Authorization');
+        return f(input, { ...init, headers });
+      }
       headers.set('Authorization', `${type} ${cred}`);
       return f(input, { ...init, headers });
     }) as MiddlewareFn,

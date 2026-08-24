@@ -22,7 +22,7 @@
  *   await client.pipe(url, '/users/1').pipe(fetchJSON);
  * } catch (e) {
  *   if (e instanceof HTTPError) {
- *     console.log(e.response.status); // e.g. 404
+ *     console.log(e.status); // e.g. 404 — shorthand for response.status
  *     console.log(e.data); // parsed error body, e.g. { message: 'Not Found' }
  *   }
  * }
@@ -47,6 +47,35 @@ export class HTTPError extends Error {
       options
     );
     this.name = 'HTTPError';
+  }
+
+  /** HTTP status of the failed response — shorthand for `response.status`. */
+  get status(): number {
+    return this.response.status;
+  }
+
+  /**
+   * Returns a clone of this error with `message` replaced, preserving
+   * `response`, `request`, `data`, and `cause` — the ergonomic way to swap
+   * in a human-readable message (e.g. from the parsed error body) without
+   * losing the `HTTPError` identity: `instanceof` checks, `status`, and
+   * `data` all keep working downstream. The original error is untouched;
+   * the clone's stack points at the `withMessage` call site.
+   *
+   * @example
+   * ```ts
+   * client.pipe(mapError, (e) =>
+   *   e instanceof HTTPError ? e.withMessage(errorText(e.data)) : e,
+   * );
+   * ```
+   */
+  withMessage(message: string): HTTPError {
+    const clone = new HTTPError(this.response, this.request, {
+      cause: this.cause,
+    });
+    clone.message = message;
+    clone.data = this.data;
+    return clone;
   }
 
   /** Plain-object shape emitted by `JSON.stringify` (no `Response`/`Request`). */

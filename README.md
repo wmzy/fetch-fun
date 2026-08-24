@@ -330,7 +330,7 @@ All four classes extend `Error` and are exported from the package root.
 
 | Class | Thrown by | Fields |
 | --- | --- | --- |
-| `HTTPError` | `fetchData` / `fetchJSON` on `!res.ok` | `response: Response` — the failed response; `request?: Request` — best-effort reconstructed request; `data?: unknown` — parsed error body when a reader (e.g. `json`) already ran; a non-2xx body the reader cannot parse (an HTML error page under `json`) resolves to `undefined`, so the `HTTPError` is still what you catch — never the reader's `SyntaxError` |
+| `HTTPError` | `fetchData` / `fetchJSON` on `!res.ok` | `response: Response` — the failed response; `status: number` — shorthand for `response.status`; `request?: Request` — best-effort reconstructed request; `data?: unknown` — parsed error body when a reader (e.g. `json`) already ran; a non-2xx body the reader cannot parse (an HTML error page under `json`) resolves to `undefined`, so the `HTTPError` is still what you catch — never the reader's `SyntaxError`; `withMessage(msg)` — clone with the message replaced, keeping `response`/`request`/`data`/`cause` and the `HTTPError` identity |
 | `NetworkError` | The innermost wrapper around the base fetch, when fetch itself rejects with a `TypeError` (DNS failure, connection refused, TLS error, offline) | `url?: string` — best-effort URL of the failed request; `cause` — the original `TypeError`; message reads like `GET https://api.example.com/x failed: network error` |
 | `TimeoutError` | The timeout layers — per-attempt `timeout` or whole-request `totalTimeout` — when the budget elapses | `cause` — the underlying `DOMException`; message includes the budget (`Request timed out after 5000ms`) |
 | `ValidationError` | `validate` on failing schema | `issues: readonly unknown[]` — the schema's issues (Zod/Valibot/ArkType objects); `data?: unknown` — the unvalidated data that was rejected |
@@ -386,6 +386,17 @@ const user = await client
 
 The mapper has the shape `(e: unknown, ctx: MapErrorContext) => unknown`, where `MapErrorContext` (`{ response?: Response; request?: Request }`) is populated only when the error is an `HTTPError` — the failed `response` plus the best-effort reconstructed `request`; every other error type (network, timeout, validation, user middleware) gets `{}`.
 
+The most common mapping — rewrite the message from the parsed error body — is one line with `HTTPError.withMessage`: the clone keeps `response`, `request`, `data`, `cause`, and the `HTTPError` identity, so downstream `instanceof` checks, `.status`, and `.data` all keep working (a global 401 → logout handler can still branch on `e.status`):
+
+```typescript
+const user = await client
+  .pipe(ff.url, '/users/42')
+  .pipe(ff.mapError, (e) =>
+    e instanceof ff.HTTPError ? e.withMessage(errorText(e.data)) : e,
+  )
+  .pipe(ff.fetchJSON);
+```
+
 Key semantics:
 
 - **Every error type passes through** — `HTTPError`, `NetworkError`, `TimeoutError`, `ValidationError`, and errors thrown by user middlewares alike. The mapper's return value is thrown as-is; async mappers are awaited.
@@ -432,7 +443,7 @@ Built-in middleware factories ship with reserved `builtin:*` names and positions
 | --- | --- | --- |
 | `withRetry(maxRetries, opts?)` | `builtin:retry` | — |
 | `withTimeout(ms)` | `builtin:timeout` | `inner` of `builtin:retry` — every retry attempt gets a fresh budget |
-| `withAuth(credentials, type?)` | `builtin:auth` | `inner` of `builtin:retry` — each attempt (re)applies the `Authorization` header; `credentials` may be a string or a supplier `() => string \| Promise<string>` re-evaluated on every attempt |
+| `withAuth(credentials, type?)` | `builtin:auth` | `inner` of `builtin:retry` — each attempt (re)applies the `Authorization` header; `credentials` may be a string or a supplier `() => string \| null \| undefined \| Promise<...>` re-evaluated on every attempt; empty results (`''` / `null` / `undefined` / whitespace) skip the header and drop any inherited `Authorization` |
 | `withLogging(logger?)` | `builtin:logging` | `outer` of `NORMAL` — logs request/response/error with duration |
 | `withProgress(opts?)` | `builtin:progress` | `inner` of `NORMAL` — inside the default group (and therefore inside retry): every (re)try reports its own progress from zero |
 
@@ -446,7 +457,7 @@ const res = await client
   .pipe(ff.fetch);
 ```
 
-`withAuth` also accepts a **token supplier** in place of a static string: `withAuth(() => store.getToken())`, or an async `withAuth(async () => await refreshJwt())`. The supplier is awaited once per request — and again on every retry attempt — so rotated or refreshed tokens are picked up without writing a custom middleware. As with the config-side `auth(o, type, credentials)`, the header value is the literal `${type} ${credentials}` with no extra encoding (pass pre-encoded base64 for `Basic`).
+`withAuth` also accepts a **token supplier** in place of a static string: `withAuth(() => store.getToken())`, or an async `withAuth(async () => await refreshJwt())`. The supplier is awaited once per request — and again on every retry attempt — so rotated or refreshed tokens are picked up without writing a custom middleware. As with the config-side `auth(o, type, credentials)`, the header value is the literal `${type} ${credentials}` with no extra encoding (pass pre-encoded base64 for `Basic`). A supplier that returns an empty value (`''`, `null`, `undefined`, or whitespace) sends no `Authorization` header at all — an inherited default (e.g. a stale token set via `header()` on a shared client) is deleted, so a logged-out supplier can simply `return token ?? undefined`.
 
 `withProgress` reports progress while bodies stream. Downloads are observed by piping `response.body` through a counting `TransformStream`; callbacks fire per chunk — after `fetch` has already resolved, so consume the body to drive them:
 
@@ -521,6 +532,24 @@ Grafting `openapi-typescript`'s generated `paths` types onto the pipe — typed 
 ## Recipes: data libraries, auth, testing
 
 Short, focused recipes — TanStack Query / SWR, 401 → refresh → retry, Nuxt / Vue, Next.js RSC, msw / vitest testing, Zod 4 / Valibot validation, and streaming responses / Server-Sent Events — now live in [docs/recipes.md](docs/recipes.md).
+
+### The SPA default: timeout + retry + auth
+
+Every SPA wants the same three protections, and they are two pipes away — no aggregate `spa()` factory needed, the defaults are already right:
+
+```typescript
+const client = ff
+  .create({ baseUrl })
+  .pipe(ff.use, ff.withTimeout(10000)) // per-attempt budget; each retry gets a fresh one
+  .pipe(ff.use, ff.withRetry(2));      // default retries idempotent methods on transient statuses (408/425/429/500/502/503/504)
+```
+
+Why these defaults fit a browser app:
+
+- **`withTimeout`** — without a budget a request on a flaky network hangs forever; with a blocking router loader that is a frozen page whose only escape is canceling the navigation. `withTimeout(10000)` rejects with `ff.TimeoutError` after 10 s, every attempt.
+- **`withRetry(2)`** — retries at most twice, and only what is safe: idempotent methods (`GET`/`HEAD`/`PUT`/`DELETE`/`OPTIONS`/`TRACE`) failing transiently (`408`/`425`/`429`/`500`/`502`/`503`/`504`, network errors, `TimeoutError`). A `POST` or a `404` never replays. Tune with `ff.withRetry(2, { methods: ['GET', 'HEAD'], ... })`.
+- **`withAuth`** — add it on the same client for token injection: `ff.withAuth(() => tokenStore.token, 'Bearer')`. The supplier re-runs on every attempt, and an empty token sends no `Authorization` header at all (logged-out requests stay anonymous).
+- **Cancellation stays yours** — `Options` is a `RequestInit` superset, so a per-call `signal` goes straight through: `client.pipe(ff.get, '/x').pipe(ff.signal, abortController.signal)`. Timeout, retry, and your signal compose via `AbortSignal.any`.
 
 ## Utilities and Advanced API
 

@@ -1276,6 +1276,74 @@ describe('Middleware Ordering', () => {
 
       expect(seen).toEqual(['Bearer static-token', 'Bearer static-token']);
     });
+
+    it('withAuth should skip the header when a supplier returns an empty string', async () => {
+      let capturedInit: RequestInit | undefined;
+      const mockFetch = vi.fn().mockImplementation((_, init) => {
+        capturedInit = init;
+        return Promise.resolve(new Response('ok'));
+      });
+
+      const config = withAuth(() => '');
+      const wrappedFetch = config.middleware(mockFetch as any, {} as any);
+      await wrappedFetch('https://example.com', undefined);
+
+      // No empty "Bearer " header is sent.
+      expect(new Headers(capturedInit?.headers).get('Authorization')).toBeNull();
+    });
+
+    it('withAuth should skip the header when a supplier returns null or undefined (async too)', async () => {
+      const seen: (string | null)[] = [];
+      const mockFetch = vi.fn().mockImplementation((_input, init) => {
+        seen.push(new Headers(init?.headers).get('authorization'));
+        return Promise.resolve(new Response('ok'));
+      });
+
+      for (const config of [
+        withAuth(() => undefined),
+        withAuth(() => null),
+        withAuth(async () => undefined),
+      ]) {
+        const wrappedFetch = config.middleware(mockFetch as any, {} as any);
+        await wrappedFetch('https://example.com', undefined);
+      }
+
+      expect(seen).toEqual([null, null, null]);
+    });
+
+    it('withAuth should treat a whitespace-only credentials string as empty', async () => {
+      let capturedInit: RequestInit | undefined;
+      const mockFetch = vi.fn().mockImplementation((_, init) => {
+        capturedInit = init;
+        return Promise.resolve(new Response('ok'));
+      });
+
+      const config = withAuth(() => '   ');
+      const wrappedFetch = config.middleware(mockFetch as any, {} as any);
+      await wrappedFetch('https://example.com', undefined);
+
+      expect(new Headers(capturedInit?.headers).get('Authorization')).toBeNull();
+    });
+
+    it('withAuth should drop an inherited Authorization header when credentials are empty', async () => {
+      // A shared client may carry a default Authorization (e.g. a stale
+      // token via header()); an empty supplier must not leave it behind.
+      let capturedInit: RequestInit | undefined;
+      const mockFetch = vi.fn().mockImplementation((_, init) => {
+        capturedInit = init;
+        return Promise.resolve(new Response('ok'));
+      });
+
+      const config = withAuth(() => undefined);
+      const wrappedFetch = config.middleware(mockFetch as any, {} as any);
+      await wrappedFetch('https://example.com', {
+        headers: { Authorization: 'Bearer stale-token', 'X-Custom': 'value' },
+      });
+
+      const headers = new Headers(capturedInit?.headers);
+      expect(headers.get('Authorization')).toBeNull();
+      expect(headers.get('X-Custom')).toBe('value');
+    });
   });
 
   describe('withProgress', () => {

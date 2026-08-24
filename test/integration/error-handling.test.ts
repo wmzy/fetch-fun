@@ -14,6 +14,7 @@ import {
   validate,
   checkError,
   mapResponse,
+  mapError,
   retry,
   signal,
   HTTPError,
@@ -639,6 +640,68 @@ describe('Error Handling Integration Tests', () => {
         url: '',
       });
       expect(parsed.data).toBeUndefined();
+    });
+
+    it('exposes the status shorthand and withMessage preserves the error type', () => {
+      const response = new Response(null, {
+        status: 401,
+        statusText: 'Unauthorized',
+      });
+      const request = new Request('https://example.com/session');
+      const original = new HTTPError(response, request, {
+        cause: new Error('boom'),
+      });
+      original.data = { message: 'token expired' };
+
+      // Shorthand for response.status.
+      expect(original.status).toBe(401);
+
+      const rewritten = original.withMessage('Session expired, please log in');
+      expect(rewritten).toBeInstanceOf(HTTPError);
+      expect(rewritten).not.toBe(original);
+      expect(rewritten.message).toBe('Session expired, please log in');
+      expect(rewritten.status).toBe(401);
+      expect(rewritten.response).toBe(response);
+      expect(rewritten.request).toBe(request);
+      expect(rewritten.data).toEqual({ message: 'token expired' });
+      expect((rewritten.cause as Error).message).toBe('boom');
+
+      // The original error is untouched — still carries its own message.
+      expect(original.message).toContain('status 401');
+    });
+
+    it('withMessage in mapError keeps instanceof/status/data for downstream handlers', async () => {
+      // The documented pattern: rewrite the message from the parsed body,
+      // keep everything the global handlers branch on.
+      const mockFetch = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ errors: { token: ['expired'] } }), {
+          status: 401,
+        })
+      );
+
+      const client = create({ fetch: mockFetch })
+        .pipe(url, 'https://example.com/me')
+        .pipe(mapError, (e: unknown) =>
+          e instanceof HTTPError
+            ? e.withMessage(
+                String((e.data as { errors: Record<string, string[]> }).errors.token?.[0])
+              )
+            : e
+        )
+        .pipe(fetchJSON);
+
+      let caught: unknown;
+      try {
+        await client;
+      } catch (e) {
+        caught = e;
+      }
+
+      expect(caught).toBeInstanceOf(HTTPError);
+      expect((caught as HTTPError).message).toBe('expired');
+      expect((caught as HTTPError).status).toBe(401);
+      expect((caught as HTTPError).data).toEqual({ errors: { token: ['expired'] } });
+      expect(mockFetch).toHaveBeenCalledTimes(1);
     });
   });
 
