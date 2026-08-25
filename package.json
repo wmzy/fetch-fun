@@ -1,6 +1,6 @@
 {
   "name": "fetch-fun",
-  "version": "0.5.0",
+  "version": "0.0.0-development",
   "description": "Functional fetch toolkit: pipeable config functions over a plain options object, typed data flow, Standard Schema validation, smart retry and per-attempt timeout. Zero dependencies.",
   "main": "dist/index.cjs",
   "module": "dist/index.mjs",
