@@ -11,6 +11,7 @@ import type {
   MapMiddlewares,
   MapErrorContext,
   Options,
+  PlaceholderParams,
   QueryType,
   SchemaOutput,
   SetQueryType,
@@ -85,6 +86,90 @@ export function appendUrl<
   U extends string
 >(o: T, path: U): Omit<T, 'url'> & { url: `${T['url']}${U}` } {
   return url(o, `${o.url}${path}`);
+}
+
+/**
+ * Fills every `{name}` placeholder in a path template with the matching
+ * param value, `encodeURIComponent`-ed so a value can never inject path
+ * separators or query syntax.
+ *
+ * Types: the template literal drives {@link PlaceholderParams} — a missing
+ * placeholder key is a compile error, and an object literal with extra keys
+ * is rejected by excess property checking.
+ *
+ * Runtime errors (all `TypeError`, all naming the template): a missing or
+ * `undefined` param value, or a placeholder that survives the fill (e.g.
+ * nested braces in the template).
+ *
+ * @param template - The path template, e.g. `'/articles/{slug}'`
+ * @param params - One value per placeholder; numbers are stringified
+ * @returns The filled path, safe to hand to `url`/`path`
+ *
+ * @example
+ * ```ts
+ * fillPath('/articles/{slug}', { slug: 'hello world' });
+ * // '/articles/hello%20world'
+ * ```
+ */
+export function fillPath<T extends string>(
+  template: T,
+  params: PlaceholderParams<T>
+): string {
+  const values = params as Record<string, string | number | undefined>;
+  const missing: string[] = [];
+  const filled = template.replace(
+    /\{([^{}]*)\}/g,
+    (placeholder, name: string) => {
+      const value = values[name];
+      if (value === undefined) {
+        if (!missing.includes(name)) missing.push(name);
+        return placeholder;
+      }
+      return encodeURIComponent(String(value));
+    }
+  );
+  if (missing.length > 0) {
+    throw new TypeError(
+      `fillPath: missing path parameter${missing.length > 1 ? 's' : ''} ` +
+        `${missing.map((name) => `"${name}"`).join(', ')} ` +
+        `for template "${template}"`
+    );
+  }
+  const residual = /\{[^{}]*\}/.exec(filled);
+  if (residual) {
+    throw new TypeError(
+      `fillPath: unresolved placeholder "${residual[0]}" ` +
+        `in template "${template}" (result: "${filled}")`
+    );
+  }
+  return filled;
+}
+
+/**
+ * Sets the request path by filling a `{name}` template — equivalent to
+ * `url(o, fillPath(template, params))`, pipeable like any config function.
+ *
+ * Like `url`, it **replaces** any existing `url`; combine with `baseUrl`
+ * (joined at fetch time), `appendUrl` (segments appended after), and
+ * `querySet`/`query` (search params appended after the filled path).
+ *
+ * @param o - The options object to modify
+ * @param template - The path template, e.g. `'/articles/{slug}'`; its
+ * placeholders become the required keys of `params` at the type level
+ * @param params - One value per placeholder, `encodeURIComponent`-ed
+ * @returns A new options object with the filled path as `url`
+ *
+ * @example
+ * ```ts
+ * client.pipe(path, '/articles/{slug}', { slug }).pipe(fetchJSON)
+ * ```
+ */
+export function path<T extends Options, U extends string>(
+  o: T,
+  template: U,
+  params: PlaceholderParams<U>
+): Omit<T, 'url'> & { url: string } {
+  return url(o, fillPath(template, params));
 }
 
 /**

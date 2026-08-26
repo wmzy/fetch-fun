@@ -28,6 +28,7 @@ That table is the short version. The full 19-dimension matrix — error serializ
 - [Quick Start](#quick-start)
 - [Core Concept: the pipe protocol](#core-concept-the-pipe-protocol)
 - [Config Functions Reference](#config-functions-reference)
+  - [path — typed placeholder interpolation](#path--typed-placeholder-interpolation)
   - [timeout — lazy, per-attempt budget](#timeout--lazy-per-attempt-budget)
   - [totalTimeout — whole-request budget](#totaltimeout--whole-request-budget)
   - [retry — decision matrix](#retry--decision-matrix)
@@ -144,6 +145,7 @@ Every config function has the shape `(o, ...args) => o'` — it takes the curren
 | `url(o, path)` | Set the request path (joined with `baseUrl` at fetch time) | `path: string` |
 | `baseUrl(o, base)` | Set the base prefix for all requests; slash-normalized join, absolute `url` bypasses it | `base: string` |
 | `appendUrl(o, path)` | Append a segment to the existing `url` (typed template concat) | `path: string` |
+| `path(o, template, params)` | Set the request path by filling `{name}` placeholders in a template — each value `encodeURIComponent`-ed; the template's placeholders become the **required** keys of `params` at the type level | `template: string`, `params: Record<string, string \| number>` |
 | `query(o, params)` | **Replace** query params | `params`: string / record / tuple array / `URLSearchParams` — values `string \| number \| boolean` |
 | `mergeQuery(o, params)` | Merge into existing query params | same input as `query` |
 | `querySet(o, name, value)` | Set one param (replaces existing value); key and value tracked at type level (`querySet(o, 'page', 1)` → `{ page: '1' }`) | `name`, `value: string \| number \| boolean` |
@@ -185,6 +187,42 @@ Notes:
 - URL building: `baseUrl` trailing slashes and `url` leading slashes collapse into a single `/`; an absolute `url` (own protocol) bypasses `baseUrl` entirely, and so does a protocol-relative `url` (`//cdn.example.com/x`) — it inherits the caller's protocol and is passed through untouched. `../` segments are kept verbatim in the join: there is no client-side URL resolution, the server sees and resolves them. `searchParams` are appended with `?` or `&` as needed. A `baseUrl` carrying its own query string is not supported — use `query`/`mergeQuery`.
 - `query` accepts anything the `URLSearchParams` constructor accepts, with `number`/`boolean` values stringified along the way (`{ page: 1 }` → `?page=1`). For nested/array serialization, serialize first with your preferred library (`qs`, `query-string`) and pass the string.
 - `json()` only configures **response** parsing; it no longer sets a request `Content-Type`. To send JSON use `jsonBody`, or set headers explicitly with `contentType`/`header`.
+
+### path — typed placeholder interpolation
+
+`path(o, template, params)` is `url` for templated routes: it fills every `{name}` placeholder in the template with `encodeURIComponent(params[name])` and sets the result as the `url` — replacing any previous one and joining with `baseUrl` at fetch time exactly like a plain `url` call. Because values are encoded, a param can never inject `/`, `?`, or `#` and escape its path segment.
+
+The template is checked at compile time: its placeholders become the **required** keys of `params` — a missing key is a compile error, and an object literal with extra keys is rejected by excess property checking — so `'/articles/{slug}'` accepts exactly `{ slug }` and nothing else.
+
+```typescript
+const article = await client
+  .pipe(ff.path, '/articles/{slug}', { slug }) // '/articles/hello-world'
+  .pipe(ff.fetchJSON<Article>);
+
+// values are URL-encoded, so they stay inside their segment
+client.pipe(ff.path, '/files/{name}', { name: 'my report.pdf' });
+// url becomes '/files/my%20report.pdf'
+```
+
+At runtime a missing or `undefined` param throws a `TypeError` naming the template and the missing parameter(s). Like every config function, the fill happens at pipe time — the error surfaces before any request is attempted.
+
+`path` composes with the rest of the URL toolkit: `baseUrl` joins underneath, `appendUrl` appends segments after the fill, and the query functions append after that:
+
+```typescript
+const posts = await client // baseUrl: 'https://api.example.com'
+  .pipe(ff.path, '/users/{id}', { id: userId })
+  .pipe(ff.appendUrl, '/posts')
+  .pipe(ff.querySet, 'page', 2)
+  .pipe(ff.fetchJSON<Post[]>);
+// GET https://api.example.com/users/42/posts?page=2
+```
+
+The standalone helper `fillPath(template, params): string` performs the same fill outside a pipe — handy for cache keys, router paths, or pre-building a `url()`:
+
+```typescript
+fillPath('/articles/{slug}', { slug: '你好 世界' });
+// '/articles/%E4%BD%A0%E5%A5%BD%20%E4%B8%96%E7%95%8C'
+```
 
 ### timeout — lazy, per-attempt budget
 
@@ -564,9 +602,10 @@ Why these defaults fit a browser app:
 | `createRetryBase(beforeRetry)` | Build a retry middleware from a fully custom `(attempt, error, o) => Promise<void>` callback (reject to stop) |
 | `withRetry` / `withTimeout` / `withAuth` / `withLogging` / `withProgress` | Named + positioned built-in middleware factories (see above) |
 | `createQuery(input)` | Typed `URLSearchParams` factory (object / tuple array / string) |
+| `fillPath(template, params)` | Fill `{name}` placeholders in a path template, `encodeURIComponent`-ing each value; throws `TypeError` on missing/`undefined` params. `path()` uses it internally; params are typed via `PlaceholderParams<T>` |
 | `NORMAL` | Symbol anchoring the default middleware position |
 
-Commonly used types: `Options`, `Fetchable`, `Client`, `Method`, `Pipe`, `MiddlewareFn`, `MiddlewareInput`, `MiddlewareConfig`, `MiddlewareName`, `QueryType`, `TypedURLSearchParams`, `StandardSchema`, `RetryOptions`, `MapErrorContext`, `ProgressOptions`, `ProgressState`, `NetworkError`, `SSEEvent` (a parsed SSE frame: `{ event, data, id?, retry? }`).
+Commonly used types: `Options`, `Fetchable`, `Client`, `Method`, `Pipe`, `MiddlewareFn`, `MiddlewareInput`, `MiddlewareConfig`, `MiddlewareName`, `QueryType`, `TypedURLSearchParams`, `PlaceholderParams`, `StandardSchema`, `RetryOptions`, `MapErrorContext`, `ProgressOptions`, `ProgressState`, `NetworkError`, `SSEEvent` (a parsed SSE frame: `{ event, data, id?, retry? }`).
 
 ## Versioning
 

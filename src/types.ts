@@ -206,6 +206,30 @@ export type TypedURLSearchParams<Q extends QueryType = QueryType> =
   URLSearchParams & { _type?: Prettify<Q> };
 
 /**
+ * Extracts every `{name}` placeholder name from a path template string.
+ *
+ * Recursively walks the template literal type, so `'/a/{x}/b/{y}'` yields
+ * `'x' | 'y'` and a template without placeholders yields `never`.
+ */
+export type ExtractPlaceholders<T extends string> =
+  T extends `${string}{${infer Name}}${infer Rest}`
+    ? Name | ExtractPlaceholders<Rest>
+    : never;
+
+/**
+ * The exact params object `fillPath` and `path` require for a template:
+ * one entry per `{name}` placeholder, and nothing else.
+ *
+ * The mapped type makes every placeholder a **required** key (a missing one
+ * is a compile error), while object-literal excess property checking rejects
+ * keys the template does not mention.
+ */
+export type PlaceholderParams<T extends string> = Record<
+  ExtractPlaceholders<T>,
+  string | number
+>;
+
+/**
  * Configuration options for fetch requests.
  * Extends RequestInit with additional properties for URL handling, middleware, etc.
  *
