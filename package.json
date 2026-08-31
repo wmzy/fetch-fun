@@ -15,6 +15,16 @@
         "types": "./dist/types/index.d.ts",
         "default": "./dist/index.cjs"
       }
+    },
+    "./openapi": {
+      "import": {
+        "types": "./dist/types/openapi.d.mts",
+        "default": "./dist/openapi.mjs"
+      },
+      "require": {
+        "types": "./dist/types/openapi.d.ts",
+        "default": "./dist/openapi.cjs"
+      }
     }
   },
   "sideEffects": false,
@@ -31,7 +41,7 @@
     "coverage": "vitest run --coverage --coverage.reporter=lcov",
     "lint": "eslint --fix src test",
     "lint:pkg": "publint --strict",
-    "attw": "attw --pack .",
+    "attw": "attw --pack . --profile node16",
     "size": "size-limit",
     "verify:tree-shaking": "node scripts/verify-tree-shaking.mjs",
     "test": "vitest",
@@ -65,13 +75,10 @@
   ],
   "size-limit": [
     {
-      "name": "full bundle (dist/index.mjs, min+gz)",
+      "name": "full library: dist/index.mjs entry + shared chunk (min+gz)",
       "path": "dist/index.mjs",
-      "disablePlugins": [
-        "@size-limit/esbuild"
-      ],
       "gzip": true,
-      "limit": "8 KB"
+      "limit": "6 KB"
     },
     {
       "name": "minimal usage: create/url/fetchJSON/json (min+gz)",
@@ -79,6 +86,13 @@
       "import": "{ create, url, fetchJSON, json }",
       "gzip": true,
       "limit": "4 KB"
+    },
+    {
+      "name": "openapi usage: createOpenapi (min+gz)",
+      "path": "src/openapi.ts",
+      "import": "{ createOpenapi }",
+      "gzip": true,
+      "limit": "2 KB"
     }
   ],
   "lint-staged": {

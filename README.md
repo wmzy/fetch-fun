@@ -565,7 +565,7 @@ const q = ff.createQuery({ page: '1', limit: '10' } as const);
 
 ## OpenAPI-typed clients
 
-Grafting `openapi-typescript`'s generated `paths` types onto the pipe — typed paths, methods, request bodies, and 200-response shapes via a ~60-line helper you own — now lives in [docs/openapi.md](docs/openapi.md), including the comparison with `openapi-fetch`.
+Grafting `openapi-typescript`'s generated `paths` types onto the pipe — typed paths (with `{param}` template substitution), methods, request bodies, and success-response shapes via the `fetch-fun/openapi` sub-entry (`createOpenapi<paths>()` binding `typedUrl`/`typedPath`/`typedMethod`/`typedJsonBody`/`typedJson`, ~1 KB gzip) — now lives in [docs/openapi.md](docs/openapi.md), including the comparison with `openapi-fetch`.
 
 ## Recipes: data libraries, auth, testing
 

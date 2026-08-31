@@ -2,7 +2,7 @@
 
 Part of the fetch-fun documentation — back to [README](../README.md).
 
-The phantom types don't stop at hand-written URLs. If your API is described by an OpenAPI schema, `openapi-typescript` can turn the spec into pure types, and a ~60-line helper grafts them onto the pipe: paths, methods, request bodies, and 200-response shapes all become compile-time constraints. Unlike `openapi-fetch` (the dedicated wrapper from the same project), nothing here is a second runtime — it's the same zero-dependency pipe, just carrying better types.
+The phantom types don't stop at hand-written URLs. If your API is described by an OpenAPI schema, `openapi-typescript` can turn the spec into pure types, and the [`fetch-fun/openapi`](https://github.com/wmzy/fetch-fun/blob/main/src/openapi.ts) sub-entry grafts them onto the pipe: paths, methods, request bodies, and success-response shapes all become compile-time constraints. Unlike `openapi-fetch` (the dedicated wrapper from the same project), nothing here is a second runtime — the helpers are thin wrappers over the same config functions, so the whole pipe stays in play.
 
 Generate the types from your spec:
 
@@ -10,71 +10,16 @@ Generate the types from your spec:
 npx openapi-typescript ./openapi.yaml -o ./api-types.d.ts
 ```
 
-Then keep this helper next to them:
+Bind them to the helpers once per spec:
 
 ```typescript
-// openapi.ts — graft openapi-typescript's `paths` onto fetch-fun's phantom types
-import * as ff from 'fetch-fun';
+import { create, fetchData } from 'fetch-fun';
+import { createOpenapi } from 'fetch-fun/openapi';
 import type { paths } from './api-types';
 
-/** OpenAPI operation ids (excludes openapi-typescript's `parameters` key). */
-type Op = 'get' | 'put' | 'post' | 'delete' | 'options' | 'head' | 'patch' | 'trace';
-
-/** JSON body an operation accepts (`unknown` when the spec defines none). */
-type JsonBody<O> = O extends {
-  requestBody?: { content: { 'application/json': infer B } };
-}
-  ? B
-  : unknown;
-
-/** JSON payload of an operation's 200 response (`unknown` when absent). */
-type JsonOk<O> = O extends {
-  responses: { 200: { content: { 'application/json': infer D } } };
-}
-  ? D
-  : unknown;
-
-/** Path must be a real key of the generated `paths` type. */
-export function typedUrl<T extends ff.Options, U extends keyof paths & string>(
-  o: T,
-  path: U
-) {
-  return ff.url<T, U>(o, path);
-}
-
-/** Method must be an operation that exists under that path. */
-export function typedMethod<
-  T extends ff.Options,
-  U extends keyof paths & string,
-  M extends keyof paths[U] & Op,
->(o: T & { url: U }, m: M) {
-  return ff.method<T & { url: U }, Uppercase<M>>(
-    o,
-    m.toUpperCase() as Uppercase<M>
-  );
-}
-
-/** Body must satisfy the operation's requestBody schema. */
-export function typedJsonBody<
-  T extends ff.Options,
-  U extends keyof paths & string,
-  M extends keyof paths[U] & Op,
->(
-  o: T & { url: U; method: Uppercase<M> },
-  m: M,
-  body: JsonBody<paths[U][M]>
-) {
-  return ff.jsonBody(o, body);
-}
-
-/** Reads the 200 response as the operation's response schema. */
-export function typedJson<
-  T extends ff.Options,
-  U extends keyof paths & string,
-  M extends keyof paths[U] & Op,
->(o: T & { url: U; method: Uppercase<M> }, m: M) {
-  return ff.json<T & { url: U; method: Uppercase<M> }, JsonOk<paths[U][M]>>(o);
-}
+const api = create({ baseUrl: 'https://api.example.com' });
+const { typedUrl, typedPath, typedMethod, typedJsonBody, typedJson } =
+  createOpenapi<paths>();
 ```
 
 Every step of the chain is now checked against the spec — `fetchData` returns the operation's response type with no type arguments:
@@ -85,7 +30,15 @@ const users = await api
   .pipe(typedUrl, '/users')
   .pipe(typedMethod, 'get')
   .pipe(typedJson, 'get')
-  .pipe(ff.fetchData);
+  .pipe(fetchData);
+
+// GET /users/{id} — path template must be a spec key, params must carry
+// exactly the template's placeholders; values are encodeURIComponent-ed
+const user = await api
+  .pipe(typedPath, '/users/{id}', { id: 42 })
+  .pipe(typedMethod, 'get')
+  .pipe(typedJson, 'get')
+  .pipe(fetchData);
 
 // POST /users — body checked against the requestBody schema, response is User
 const created = await api
@@ -93,10 +46,12 @@ const created = await api
   .pipe(typedMethod, 'post')
   .pipe(typedJsonBody, 'post', { name: 'Ada', email: 'ada@example.com' })
   .pipe(typedJson, 'post')
-  .pipe(ff.fetchData);
+  .pipe(fetchData);
 ```
 
-Typos fail loudly: `'/user'` is not a key of `paths`, `'delete'` doesn't exist under `/users`, `{ nome: 'Ada' }` doesn't satisfy `UserInput`, and reading the response for `'post'` right after setting the method to `'get'` is a type error — `typedJson` requires `method: Uppercase<M>`, so the method and the reader can't drift apart.
+Typos fail loudly: `'/user'` is not a key of `paths`, `'/users/{userId}'` is not either — templates must match the spec verbatim; `'/users' + 'delete'` fails when the path defines no such operation; a params object missing `{ id }`'s key (or carrying extras) is a compile error, and at runtime `fillPath` still throws a `TypeError` if one slips through a type hole; `{ nome: 'Ada' }` doesn't satisfy `UserInput`; and reading the response for `'post'` right after setting the method to `'get'` is a type error — `typedJson` requires `method: Uppercase<M>`, so the method and the reader can't drift apart.
+
+`typedPath` keeps the template's literal type as the phantom `url` (`'/users/{id}'`, not the filled string), which is what lets the method/body/reader steps keep constraining against `paths[U]` — only the runtime value is the filled, encoded path.
 
 **Types are a promise, not a guarantee.** The spec-derived type only says what the server *should* return. For runtime enforcement, pair the graft with `validate` — write (or generate) a Standard Schema for the same payload and the two layers agree:
 
@@ -106,11 +61,11 @@ const UserListSchema = z.array(UserSchema); // Zod, Valibot, ArkType — any ven
 const users = await api
   .pipe(typedUrl, '/users')
   .pipe(typedMethod, 'get')
-  .pipe(ff.json)
-  .pipe(ff.validate, UserListSchema)
-  .pipe(ff.fetchData); // Promise<User[]> — and throws ValidationError if the server lies
+  .pipe(json)
+  .pipe(validate, UserListSchema)
+  .pipe(fetchData); // Promise<User[]> — and throws ValidationError if the server lies
 ```
 
-**Know the edges.** `openapi-typescript` emits types only — zero runtime, the same trade fetch-fun makes — so `allOf` and discriminator unions type-check but aren't verified at runtime (that's the `validate` pairing above). Path parameters stay plain strings: `typedUrl` matches literal keys like `'/users/{id}'`, so templated calls need a small template-literal matcher or a cast. And `JsonOk` covers the 200 response — extend the conditional if you want other status codes in the union.
+**Know the edges.** `openapi-typescript` emits types only — zero runtime, the same trade fetch-fun makes — so `allOf` and discriminator unions type-check but aren't verified at runtime (that's the `validate` pairing above). `JsonOk` covers the 200 response first, then 201 as fallback — extend the chain in your own wrapper if your spec leans on other status codes. Query parameters stay plain: pipe `query`/`querySet` as usual (the operation's `parameters.query` type is there in `paths` if you want to pin it yourself). And the helpers don't care where the `paths` types came from: generated, hand-written, or adopted one endpoint at a time — `createOpenapi<paths>()` per spec, `JsonBody`/`JsonOk`/`PathKey`/`Op` are exported for your own signatures.
 
-**Versus `openapi-fetch`:** it's a purpose-built client with path-param substitution and its own request hooks done for you; the graft above costs ~60 lines you own, but keeps the whole pipe in play — middleware positioning, retry/timeout, Standard Schema `validate`, injectable fetch — and doesn't care where the `paths` types came from: generated, hand-written, or adopted one endpoint at a time.
+**Versus `openapi-fetch`:** it's a purpose-built client with path-param substitution and its own request hooks done for you; this graft is ~1 KB gzip with all dependencies and keeps the whole pipe in play — middleware positioning, retry/timeout, Standard Schema `validate`, injectable fetch — at the cost of passing the operation id to `typedJsonBody`/`typedJson` (lowercase `m`) so the schemas can be looked up.
