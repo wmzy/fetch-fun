@@ -14,6 +14,11 @@ export {
   withLogging,
   withProgress,
 } from './middleware';
-export type { RetryOptions, ProgressOptions, ProgressState } from './middleware';
+export type {
+  RetryOptions,
+  BeforeRetryHook,
+  ProgressOptions,
+  ProgressState,
+} from './middleware';
 export { createQuery, type TupleArrayToRecord } from './util';
 export { events, type SSEEvent } from './events';

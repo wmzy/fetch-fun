@@ -14,6 +14,7 @@ import {
   signal,
   method,
   body,
+  header,
   checkError,
   json,
   validate,
@@ -110,6 +111,142 @@ describe('Middleware Tests', () => {
 
     expect(res.status).toBe(500);
     expect(mockFetch).toHaveBeenCalledTimes(3); // 1 initial + 2 retries
+  });
+
+  // =========================================================================
+  // beforeRetry hook: rewrite or cancel the next attempt
+  // =========================================================================
+
+  it('beforeRetry rewrites the next attempt (401 token refresh replay)', async () => {
+    const mockFetch = vi
+      .fn()
+      .mockResolvedValueOnce(new Response('token expired', { status: 401 }))
+      .mockResolvedValueOnce(
+        new Response('{"ok":true}', {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      );
+    const seen: {
+      attempt: number;
+      error?: unknown;
+      request?: Request;
+      response?: Response;
+    }[] = [];
+    const client = create({ fetch: mockFetch })
+      .pipe(header, 'Authorization', 'Bearer stale')
+      .pipe(header, 'Accept', 'application/json')
+      .pipe(retry, 2, {
+        statuses: [401],
+        delay: { initial: 1 },
+        beforeRetry: async (info) => {
+          seen.push(info);
+          // Async hooks are awaited: the refresh settles before the replay.
+          await Promise.resolve();
+          return { headers: { Authorization: 'Bearer refreshed' } };
+        },
+      });
+
+    const me = await client
+      .pipe(url, 'https://example.com/me')
+      .pipe(fetchJSON);
+
+    expect(me).toEqual({ ok: true });
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+
+    // The first attempt went out with the stale token.
+    expect(new Headers(mockFetch.mock.calls[0]![1]!.headers).get('Authorization')).toBe(
+      'Bearer stale'
+    );
+    // The replay carried the patched header AND kept the unrelated ones
+    // (headers merge per name instead of replacing the whole set).
+    const replayHeaders = new Headers(mockFetch.mock.calls[1]![1]!.headers);
+    expect(replayHeaders.get('Authorization')).toBe('Bearer refreshed');
+    expect(replayHeaders.get('Accept')).toBe('application/json');
+
+    // The hook saw the failed attempt: 0-indexed, the resolved 401 response,
+    // a best-effort reconstructed request, and no error.
+    expect(seen.length).toBe(1);
+    expect(seen[0]!.attempt).toBe(0);
+    expect(seen[0]!.error).toBeUndefined();
+    expect(seen[0]!.response).toBeInstanceOf(Response);
+    expect(seen[0]!.response!.status).toBe(401);
+    expect(seen[0]!.request).toBeInstanceOf(Request);
+    expect(seen[0]!.request!.url).toBe('https://example.com/me');
+  });
+
+  it('beforeRetry returning false stops the loop and returns the failed response intact', async () => {
+    const mockFetch = vi
+      .fn()
+      .mockResolvedValue(new Response('busy', { status: 503 }));
+    const client = create({ fetch: mockFetch }).pipe(retry, 3, {
+      delay: { initial: 1 },
+      beforeRetry: () => false,
+    });
+
+    const res = await client.pipe(url, 'https://example.com').pipe(fetch);
+
+    expect(mockFetch).toHaveBeenCalledTimes(1); // gave up before any replay
+    expect(res.status).toBe(503);
+    // The failed response is returned with its body intact (not cancelled
+    // as a discarded retry would be).
+    expect(await res.text()).toBe('busy');
+  });
+
+  it('beforeRetry is not consulted when no retry would happen anyway', async () => {
+    const mockFetch = vi
+      .fn()
+      .mockResolvedValue(new Response('Not Found', { status: 404 }));
+    const beforeRetry = vi.fn();
+    const client = create({ fetch: mockFetch }).pipe(retry, 3, {
+      delay: { initial: 1 },
+      beforeRetry,
+    });
+
+    const res = await client.pipe(url, 'https://example.com').pipe(fetch);
+
+    expect(res.status).toBe(404);
+    expect(mockFetch).toHaveBeenCalledTimes(1); // 404 is not retryable
+    expect(beforeRetry).not.toHaveBeenCalled();
+  });
+
+  it('beforeRetry sees the thrown HTTPError on the rejection path', async () => {
+    const mockFetch = vi
+      .fn()
+      .mockResolvedValueOnce(new Response('slow down', { status: 429 }))
+      .mockResolvedValueOnce(new Response('ok'));
+    const seen: {
+      attempt: number;
+      error?: unknown;
+      request?: Request;
+      response?: Response;
+    }[] = [];
+    const client = create({ fetch: mockFetch })
+      .pipe(retry, 2, {
+        delay: { initial: 1 },
+        beforeRetry: (info) => {
+          seen.push(info);
+          return { headers: { 'X-Replay': 'yes' } };
+        },
+      })
+      .pipe(checkError, (res) => {
+        if (!res.ok) throw new HTTPError(res);
+      });
+
+    const res = await client.pipe(url, 'https://example.com').pipe(fetch);
+
+    expect(res.status).toBe(200);
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    // The hook saw the error classification, the HTTPError's own response,
+    // and a reconstructed request.
+    expect(seen.length).toBe(1);
+    expect(seen[0]!.attempt).toBe(0);
+    expect(seen[0]!.error).toBeInstanceOf(HTTPError);
+    expect(seen[0]!.response).toBe((seen[0]!.error as HTTPError).response);
+    expect(seen[0]!.response!.status).toBe(429);
+    expect(seen[0]!.request).toBeInstanceOf(Request);
+    // The patch applied to the replay on the rejection path too.
+    expect(new Headers(mockFetch.mock.calls[1]![1]!.headers).get('X-Replay')).toBe('yes');
   });
 
   it('should prefer a Retry-After header over backoff (integer seconds)', async () => {

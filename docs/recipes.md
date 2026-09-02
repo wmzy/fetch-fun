@@ -65,6 +65,8 @@ useSWR(['users', id], ([, id]) =>
 
 ## 401 → refresh → retry
 
+For the common case — refresh the token, then replay once — the built-in [`beforeRetry`](../README.md#retry--decision-matrix) hook is enough: `pipe(retry, 1, { statuses: [401, ...], beforeRetry })` with the hook returning a `{ headers: { Authorization } }` patch (see the complete example in the README). Reach for the middleware below when you need more than the hook gives you: a single-flight refresh lock shared across concurrent requests, refresh-on-every-401 without burning a retry budget, or logging out on refresh failure.
+
 Token refresh is a middleware concern. At the middleware layer a 401 is still a resolved `Response` — nothing has thrown yet — so you can refresh the token and replay the request before the error machinery ever sees it:
 
 ```typescript

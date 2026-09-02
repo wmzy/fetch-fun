@@ -64,6 +64,38 @@ export function createRetryBase(beforeRetry: FetchBeforeRetry): MiddlewareFn {
 }
 
 /**
+ * Hook invoked right before each retry attempt — after the retry decision
+ * (method/status gates, {@link RetryOptions.shouldRetry} predicate) has
+ * concluded a retry is worth it, and before the backoff wait. The
+ * counterpart of ky's `beforeRetry` hook.
+ *
+ * Return a plain `RequestInit` patch to rewrite the next attempt (merged
+ * into the request init: `headers` merge per name with the patch winning,
+ * every other field replaces), `false` to give up and surface the failed
+ * outcome as-is, or anything else (`undefined`/`void`/`true`) to retry
+ * unchanged. (The widened `boolean` keeps inline `() => false` arrows
+ * assignable — inferred return types widen literals.)
+ *
+ * @param info - What the failed attempt looked like:
+ *   - `attempt` — the 0-indexed number of the attempt that just failed
+ *   - `error` — the rejection, when the attempt threw; `undefined` when it
+ *     resolved with a retryable status
+ *   - `request` — best-effort `Request` of the failed attempt (the `Request`
+ *     input itself, a reconstruction, or `undefined` when the parameters
+ *     cannot be rebuilt)
+ *   - `response` — the failed response when one exists: the resolved
+ *     retryable response itself, or the `response` carried by a thrown
+ *     `HTTPError`
+ * @returns A `RequestInit` patch, `false`, or nothing — possibly async
+ */
+export type BeforeRetryHook = (info: {
+  attempt: number;
+  error?: unknown;
+  request?: Request;
+  response?: Response;
+}) => RequestInit | boolean | void | Promise<RequestInit | boolean | void>;
+
+/**
  * Configuration for the retry policy of {@link createRetry}.
  */
 export type RetryOptions = {
@@ -113,6 +145,16 @@ export type RetryOptions = {
     attempt: number,
     result: { response?: Response; error?: unknown }
   ) => boolean | Promise<boolean>;
+  /**
+   * Hook run right before each retry attempt — after the gates decided a
+   * retry is worth it, before the backoff wait. Return a `RequestInit`
+   * patch to rewrite the next attempt (`headers` merge per name with the
+   * patch winning; other fields replace), `false` to give up and surface
+   * the failed outcome as-is, or nothing to retry unchanged. Async hooks
+   * are awaited, so a token refresh can complete before the replay. See
+   * {@link BeforeRetryHook} for the `info` fields.
+   */
+  beforeRetry?: BeforeRetryHook;
   /**
    * Exponential backoff tuning (passed to `backoffDelay`).
    * @default { initial: 1000, max: 10000, multiplier: 2 }
@@ -179,6 +221,15 @@ const DEFAULT_RETRY_METHODS: readonly string[] = [
  * further attempt and rejects with the signal's abort reason (an
  * `AbortError` for a plain `controller.abort()`).
  *
+ * When `opts.beforeRetry` is provided it runs right before each retry
+ * attempt — after the gates above decided a retry is worth it, before the
+ * backoff wait — with what the failed attempt looked like (`attempt`,
+ * `error`, best-effort `request`, and `response` when one exists). The
+ * hook may return a `RequestInit` patch merged into the next attempt
+ * (headers merge per name; everything else replaces), `false` to give up
+ * and surface the failed outcome as-is, or nothing to retry unchanged;
+ * async hooks are awaited. See {@link BeforeRetryHook}.
+ *
  * @param maxRetries - Maximum number of retry attempts (the initial attempt
  * is not counted)
  * @param opts - Policy overrides (statuses, methods, Retry-After handling,
@@ -209,6 +260,7 @@ export function createRetry(
   const respectRetryAfter = opts?.respectRetryAfter ?? true;
   const maxRetryAfter = opts?.maxRetryAfter ?? 30000;
   const shouldRetry = opts?.shouldRetry;
+  const beforeRetryHook = opts?.beforeRetry;
   const { initial = 1000, max = 10000, multiplier = 2 } = opts?.delay ?? {};
 
   return (f, o) =>
@@ -232,11 +284,15 @@ export function createRetry(
         if (o.signal?.aborted) throw o.signal.reason;
       };
 
+      // The init of the next (and first) attempt; a beforeRetry patch
+      // rewrites it between attempts, so inner middlewares (auth, timeout,
+      // the fetch itself) see the patched request on the replay.
+      let nextInit = init;
       let attempt = 0;
       for (;;) {
         let res: Response;
         try {
-          res = await f(input, init);
+          res = await f(input, nextInit);
         } catch (e) {
           // Explicit opt-out: unwrap and rethrow the original error.
           if (isNotRetryError(e)) throw e.cause ?? e;
@@ -260,6 +316,24 @@ export function createRetry(
             throw e;
           }
 
+          if (beforeRetryHook) {
+            const patch = await beforeRetryHook({
+              attempt,
+              error: e,
+              request:
+                e instanceof HTTPError && e.request
+                  ? e.request
+                  : bestEffortRequestOf(input, nextInit),
+              response: e instanceof HTTPError ? e.response : undefined,
+            });
+            // Returning false gives up: the failed attempt's error is
+            // surfaced to the caller as-is, exactly as budget exhaustion
+            // would have.
+            if (patch === false) throw e;
+            if (patch && patch !== true)
+              nextInit = applyInitPatch(nextInit, patch);
+          }
+
           // No response to consult for Retry-After on the rejection path.
           await waitForBackoff(backoffDelay(attempt, initial, max, multiplier));
           attempt += 1;
@@ -276,6 +350,20 @@ export function createRetry(
             ? await shouldRetry(attempt, { response: res })
             : statuses.has(res.status);
           if (worthRetrying) {
+            if (beforeRetryHook) {
+              // The discarded response's body is still readable here, so
+              // the hook may inspect it before the cancel below releases it.
+              const patch = await beforeRetryHook({
+                attempt,
+                request: bestEffortRequestOf(input, nextInit),
+                response: res,
+              });
+              // Returning false gives up: the failed response is returned
+              // to the caller with its body intact.
+              if (patch === false) return res;
+              if (patch && patch !== true)
+                nextInit = applyInitPatch(nextInit, patch);
+            }
             const retryAfterMs = respectRetryAfter
               ? parseRetryAfter(res.headers.get('Retry-After'), maxRetryAfter)
               : undefined;
@@ -291,6 +379,46 @@ export function createRetry(
         return res;
       }
     };
+}
+
+/**
+ * Best-effort `Request` reconstruction from raw fetch arguments, for the
+ * {@link BeforeRetryHook} context: a `Request` input passes through as-is,
+ * anything else is rebuilt via the `Request` constructor, and `undefined`
+ * is returned when the constructor rejects the parameters (e.g. a GET
+ * with a body, or a one-shot stream body without `duplex`).
+ */
+function bestEffortRequestOf(
+  input: RequestInfo | URL,
+  init?: RequestInit
+): Request | undefined {
+  try {
+    if (input instanceof Request) return input;
+    return new Request(String(input), init);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Applies a {@link RetryOptions.beforeRetry} patch to the request init of
+ * the next attempt. Shallow merge with the patch winning — except
+ * `headers`, which merge per name (patch entries override, every other
+ * existing header survives), so swapping one header (say, a refreshed
+ * `Authorization`) cannot silently drop the rest.
+ */
+function applyInitPatch(
+  init: RequestInit | undefined,
+  patch: RequestInit
+): RequestInit {
+  if (init?.headers == null || patch.headers == null) {
+    return { ...init, ...patch };
+  }
+  const headers = new Headers(init.headers);
+  new Headers(patch.headers).forEach((value, name) => {
+    headers.set(name, value);
+  });
+  return { ...init, ...patch, headers };
 }
 
 // ============================================================================

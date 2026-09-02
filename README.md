@@ -285,6 +285,7 @@ When `opts.shouldRetry` is provided, it **replaces** the two built-in decisions 
 | `respectRetryAfter` | `true` | A parseable, non-past `Retry-After` header (integer seconds or HTTP-date) overrides backoff |
 | `maxRetryAfter` | `30000` | Upper bound (ms) for waits honored from `Retry-After`; a server demanding more is clamped down to it — the retry still happens, just sooner. Only relevant when `respectRetryAfter` is true |
 | `shouldRetry` | — (built-in decisions) | Custom predicate `(attempt, { response? \| error? }) => boolean \| Promise<boolean>` that fully replaces the built-in retry decisions (see note above); `attempt` is 0-indexed |
+| `beforeRetry` | — (none) | Hook `({ attempt, error?, request?, response? }) => RequestInit \| false \| void \| Promise<...>` run right before each retry attempt — after the gates decided a retry is worth it, before the backoff wait. Return a `RequestInit` patch to rewrite the next attempt (`headers` merge per name with the patch winning, other fields replace), `false` to give up and surface the failed outcome as-is, or nothing to retry unchanged. Async hooks are awaited. `error` is the rejection when the attempt threw; `response` is the failed response when one exists (the resolved retryable response, or a thrown `HTTPError`'s response — body still readable); `request` is a best-effort reconstructed `Request` |
 | `delay` | `{ initial: 1000, max: 10000, multiplier: 2 }` | Exponential backoff tuning; delays carry ±25% jitter |
 
 ```typescript
@@ -310,6 +311,37 @@ await client.pipe(ff.url, '/report').pipe(ff.retry, 2, {
   },
 });
 ```
+
+**401 → refresh the token → replay** is one `beforeRetry` hook — no custom middleware. The hook runs after retry decided the 401 is worth another attempt, awaits your async refresh, and its returned `RequestInit` patch becomes the replayed request (headers merge per name, so swapping `Authorization` keeps `Content-Type` and friends):
+
+```typescript
+import * as ff from 'fetch-fun';
+
+let accessToken = await signIn(); // e.g. 'Bearer eyJhbGci...'
+
+const api = ff
+  .create({ baseUrl: 'https://api.example.com' })
+  .pipe(ff.header, 'Authorization', `Bearer ${accessToken}`) // whatever signIn gave
+  .pipe(ff.retry, 1, {
+    statuses: [401, 429, 503], // the token-expiry 401 is retryable
+    delay: { initial: 250 },
+    beforeRetry: async ({ attempt, error, request, response }) => {
+      // Only the token-expiry path needs new credentials; everything else
+      // (429/503) just retries with the original request untouched.
+      if (response?.status !== 401) return; // void → retry unchanged
+      accessToken = await refreshAccessToken(); // POST /oauth/token, awaited
+      // The patch is merged into the next attempt: the replay goes out
+      // with the fresh token while the rest of the headers survive.
+      return { headers: { Authorization: `Bearer ${accessToken}` } };
+      // return false;  // ← instead: give up, surface the 401 as-is
+    },
+  });
+
+// First try: 401 → beforeRetry refreshes → replay: 200
+const me = await api.pipe(ff.url, '/me').pipe(ff.fetchJSON);
+```
+
+The hook also fires for rejections (a `checkError` that threw `HTTPError`) — then `error` is the thrown error and `response` the `HTTPError`'s response. Returning `false` stops the loop: the failed response is returned with its body intact, or the original error rethrown — exactly as an exhausted budget would surface it. The hook is never consulted when no retry would happen anyway (non-retryable method/status, `ValidationError`, exhausted `maxRetries`).
 
 Backoff waits are interruptible by the client's `signal`, and discarded retry responses have their bodies cancelled before the wait. An honored `Retry-After` never waits longer than `maxRetryAfter` (default 30s) — the value is clamped, not skipped.
 
