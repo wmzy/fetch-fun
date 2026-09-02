@@ -1,6 +1,7 @@
 import type {
   Fetchable,
   MapErrorContext,
+  MiddlewareEntry,
   Pipe,
   ReaderData,
   ResolveData,
@@ -168,13 +169,56 @@ function applyNetworkError(
  * as {@link NetworkError} — inside the middleware chain, so user middleware
  * errors keep their original identity.
  *
+ * Results are memoized per middlewares-array reference: configs are
+ * immutable (every `pipe` copies), so the array reference identifies a
+ * client's middleware set and the sort never reruns for it. Middleware
+ * functions receive — and may capture — the very `o` they are applied with
+ * (`retry` reads `o.signal`, `logging` reads `o.url`), so a fully built
+ * chain is only reused when it was built from the identical config, base
+ * fetch, and timeout budgets.
+ *
  * @param f - The base fetch function
  * @param o - The fetchable configuration containing middlewares
  * @returns The fetch function with all middlewares applied
  */
+
+// Shared key for middleware-less configs so they hit the cache too instead
+// of allocating a fresh (always-empty) array per request.
+const EMPTY_MIDDLEWARES: MiddlewareEntry[] = [];
+
+// Applied-chain cache keyed by the middlewares array reference. Weak so a
+// discarded client's entry is collected with it.
+const appliedChainCache = new WeakMap<
+  MiddlewareEntry[],
+  {
+    sorted: MiddlewareEntry[];
+    built?: {
+      f: typeof globalThis.fetch;
+      o: Fetchable;
+      timeoutMs: number | undefined;
+      totalTimeoutMs: number | undefined;
+      wrapped: typeof globalThis.fetch;
+    };
+  }
+>();
+
 export function applyMiddlewares(f: typeof globalThis.fetch, o: Fetchable) {
-  const entries = o.middlewares || [];
-  const sorted = sortMiddlewares(entries);
+  const entries = o.middlewares || EMPTY_MIDDLEWARES;
+  let cache = appliedChainCache.get(entries);
+  if (!cache) {
+    cache = { sorted: sortMiddlewares(entries) };
+    appliedChainCache.set(entries, cache);
+  }
+  const { sorted, built } = cache;
+  if (
+    built &&
+    built.f === f &&
+    built.o === o &&
+    built.timeoutMs === o.timeoutMs &&
+    built.totalTimeoutMs === o.totalTimeoutMs
+  ) {
+    return built.wrapped;
+  }
   const base = applyNetworkError(f);
   const innermost =
     o.timeoutMs != null ? applyTimeout(base, o.timeoutMs) : base;
@@ -185,9 +229,18 @@ export function applyMiddlewares(f: typeof globalThis.fetch, o: Fetchable) {
   );
   // The whole-request budget sits outside every middleware so it also
   // bounds the retry loop (attempts + backoff) as a single unit.
-  return o.totalTimeoutMs != null
-    ? applyTotalTimeout(chained, o.totalTimeoutMs)
-    : chained;
+  const wrapped =
+    o.totalTimeoutMs != null
+      ? applyTotalTimeout(chained, o.totalTimeoutMs)
+      : chained;
+  cache.built = {
+    f,
+    o,
+    timeoutMs: o.timeoutMs,
+    totalTimeoutMs: o.totalTimeoutMs,
+    wrapped,
+  };
+  return wrapped;
 }
 
 /**

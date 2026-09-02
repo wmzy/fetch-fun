@@ -317,4 +317,75 @@ describe('Fetch Tests', () => {
     );
     expect(absolute).toHaveBeenCalledWith('https://other.example.com/y', {});
   });
+
+  it('should sort the middleware set once per client across requests', async () => {
+    // Configs are immutable (every pipe copies), so the middlewares array
+    // reference identifies the client's middleware set: sorting must not
+    // rerun per request even though each request is a distinct config.
+    const mockFetch = vi.fn().mockResolvedValue(new Response('Success'));
+    const middlewareModule = await import('@/middleware');
+    const sortSpy = vi.spyOn(middlewareModule, 'sortMiddlewares');
+
+    const client = ff
+      .create({ fetch: mockFetch })
+      .pipe(ff.use, ff.withRetry(1))
+      .pipe(ff.use, ff.withTimeout(100));
+
+    await ff.fetch(client.pipe(ff.url, '/first'));
+    await ff.fetch(client.pipe(ff.url, '/second'));
+
+    expect(sortSpy).toHaveBeenCalledTimes(1);
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    expect(mockFetch.mock.calls[0]?.[0]).toBe('/first');
+    expect(mockFetch.mock.calls[1]?.[0]).toBe('/second');
+  });
+
+  it('should reuse the built chain for the identical config object', async () => {
+    // Middleware functions receive — and may capture — the `o` they are
+    // applied with, so a built chain is only valid for the config it was
+    // built from. Re-fetching the very same config skips re-chaining.
+    const mockFetch = vi.fn().mockResolvedValue(new Response('Success'));
+    const applied = vi.fn(
+      (next: typeof globalThis.fetch) =>
+        (input: RequestInfo | URL, init?: RequestInit) =>
+          next(input, init)
+    );
+    const shared = ff
+      .create({ url: '/same', fetch: mockFetch })
+      .pipe(ff.use, applied as unknown as ff.MiddlewareFn);
+
+    await ff.fetch(shared);
+    await ff.fetch(shared);
+
+    expect(applied).toHaveBeenCalledTimes(1); // chain built once, reused
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    expect(mockFetch).toHaveBeenNthCalledWith(1, '/same', {});
+    expect(mockFetch).toHaveBeenNthCalledWith(2, '/same', {});
+  });
+
+  it('should rebuild the chain when a per-request signal differs', async () => {
+    // The cached chain must not leak request 1's config into request 2:
+    // a fresh `signal` pipes a fresh config, which must be re-chained so
+    // retry honors the second request's abort.
+    const mockFetch = vi
+      .fn()
+      .mockResolvedValueOnce(new Response('warm'))
+      .mockResolvedValue(new Response('unavailable', { status: 503 }));
+    const client = ff
+      .create({ fetch: mockFetch })
+      .pipe(ff.retry, 2, { delay: { initial: 5000 } });
+
+    // Warm the cache with an un-signaled request that succeeds.
+    await ff.fetch(client.pipe(ff.url, '/warm'));
+
+    const controller = new AbortController();
+    const pending = client
+      .pipe(ff.url, '/abort')
+      .pipe(ff.signal, controller.signal)
+      .pipe(ff.fetch);
+    setTimeout(() => controller.abort(), 20);
+
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    expect(mockFetch).toHaveBeenCalledTimes(2); // warm + one aborted attempt
+  });
 });
