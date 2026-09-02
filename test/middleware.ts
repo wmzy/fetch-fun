@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, it, vi, expect } from 'vitest';
 import {
   retry,
   create,
+  createRetry,
   url,
   fetch,
   fetchData,
@@ -283,6 +284,38 @@ describe('Middleware Tests', () => {
       client.pipe(url, 'https://example.com').pipe(fetch)
     ).rejects.toThrow(NetworkError);
     expect(mockFetch).toHaveBeenCalledTimes(1); // immediate rethrow
+  });
+
+  it('should not retry a POST carried by a Request input (method not in init)', async () => {
+    // Regression: reading only `init.method` classified a Request-carried
+    // POST as the default GET and retried a non-idempotent request.
+    const mockFetch = vi
+      .fn()
+      .mockResolvedValue(new Response('oops', { status: 500 }));
+    const wrapped = createRetry(3, { delay: { initial: 1 } })(
+      mockFetch as unknown as typeof globalThis.fetch,
+      {} as Parameters<MiddlewareFn>[1]
+    );
+
+    const res = await wrapped(
+      new Request('https://example.com/submit', { method: 'POST' })
+    );
+
+    expect(res.status).toBe(500);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+
+    // Contrast: a Request-carried GET still retries on a transient status.
+    const mockGet = vi
+      .fn()
+      .mockResolvedValue(new Response('ok', { status: 503 }));
+    const wrappedGet = createRetry(1, { delay: { initial: 1 } })(
+      mockGet as unknown as typeof globalThis.fetch,
+      {} as Parameters<MiddlewareFn>[1]
+    );
+    const pending = wrappedGet(new Request('https://example.com'));
+    await vi.runAllTimersAsync();
+    await expect(pending).resolves.toHaveProperty('status', 503);
+    expect(mockGet).toHaveBeenCalledTimes(2);
   });
 
   it('should stop retrying when the signal aborts during backoff (rejection path)', async () => {

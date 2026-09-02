@@ -8,7 +8,15 @@ import type {
 } from './types';
 
 import { NORMAL } from './types';
-import { sleep, retry, backoffDelay, isNotRetryError, applyTimeout, parseRetryAfter } from './util';
+import {
+  sleep,
+  retry,
+  backoffDelay,
+  isNotRetryError,
+  applyTimeout,
+  parseRetryAfter,
+  requestMethodOf,
+} from './util';
 import { HTTPError, ValidationError } from './errors';
 
 /**
@@ -205,7 +213,13 @@ export function createRetry(
 
   return (f, o) =>
     async (input, init) => {
-      const method = String(init?.method ?? 'GET').toUpperCase();
+      // `init.method` alone misses the method of a `Request` input, so a
+      // POST sent as `new Request(url, {method: 'POST'})` would be
+      // misclassified as the default GET — and retried despite being
+      // non-idempotent.
+      const method = String(
+        requestMethodOf(input, init) ?? 'GET'
+      ).toUpperCase();
       const canRetryMethod = methods.has(method);
 
       // `sleep` resolves (rather than rejects) when `signal` aborts, so an

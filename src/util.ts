@@ -48,6 +48,25 @@ export function sleep(ms: number, signal?: AbortSignal) {
 }
 
 /**
+ * Best-effort extraction of the request method from fetch arguments:
+ * `init.method` wins when present, a `Request` input reports its own
+ * method, and everything else is `undefined` (rendered as `GET`).
+ *
+ * Shared by the network-error reporter and the retry middleware — the
+ * latter must not classify a `Request`-carried POST as the default GET
+ * and retry a non-idempotent request.
+ */
+export function requestMethodOf(
+  input: RequestInfo | URL,
+  init?: RequestInit
+): string | undefined {
+  if (typeof init?.method === 'string' && init.method !== '') {
+    return init.method;
+  }
+  return input instanceof Request ? input.method : undefined;
+}
+
+/**
  * Wraps a fetch function with a per-call timeout signal.
  *
  * Each invocation creates a fresh `AbortSignal.timeout(ms)` — so every call,

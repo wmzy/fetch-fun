@@ -10,7 +10,13 @@ import { json } from './config';
 import { mapErrorSymbol } from './constants';
 import { HTTPError, NetworkError } from './errors';
 import { sortMiddlewares } from './middleware';
-import { getData, hasData, applyTimeout, applyTotalTimeout } from './util';
+import {
+  getData,
+  hasData,
+  applyTimeout,
+  applyTotalTimeout,
+  requestMethodOf,
+} from './util';
 
 /**
  * Reports whether `url` parses as an absolute URL (i.e. carries its own
@@ -101,21 +107,6 @@ function requestUrlOf(input: RequestInfo | URL): string | undefined {
   if (typeof input === 'string') return input;
   if (input instanceof URL) return input.href;
   return input.url;
-}
-
-/**
- * Best-effort extraction of the request method from fetch arguments:
- * `init.method` wins when present, a `Request` input reports its own
- * method, and everything else is `undefined` (rendered as `GET`).
- */
-function requestMethodOf(
-  input: RequestInfo | URL,
-  init?: RequestInit
-): string | undefined {
-  if (typeof init?.method === 'string' && init.method !== '') {
-    return init.method;
-  }
-  return input instanceof Request ? input.method : undefined;
 }
 
 /**
