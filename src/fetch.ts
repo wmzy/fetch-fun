@@ -153,8 +153,9 @@ function applyNetworkError(
  *
  * When `timeout()` set a `timeoutMs` budget, an innermost built-in layer
  * wraps the base fetch so every attempt — including each retry by an outer
- * middleware — gets a fresh `AbortSignal.timeout`, combined with any user
- * `signal` via `AbortSignal.any` (Node.js >= 20.3.0). Without a budget this
+ * middleware — gets a fresh timeout signal, combined with any user
+ * `signal` (natively `AbortSignal.any` on Node.js >= 20.3.0, an equivalent
+ * manual composition on older runtimes). Without a budget this
  * is a zero-overhead pass-through.
  *
  * When `totalTimeout()` set a `totalTimeoutMs` budget, an outermost built-in

@@ -48,7 +48,7 @@ That table is the short version. The full 19-dimension matrix — error serializ
 
 ## Requirements
 
-- Node.js >= 20.3 (uses `AbortSignal.any` and `AbortSignal.timeout`), or any modern browser shipping both.
+- Node.js >= 18 (native `fetch`), or any modern browser. `AbortSignal.any`/`AbortSignal.timeout` (Node.js >= 20.3) are used when present and gracefully fall back to an equivalent manual `AbortController` composition on older runtimes.
 - Native `fetch`.
 
 ## Installation
@@ -226,7 +226,7 @@ fillPath('/articles/{slug}', { slug: '你好 世界' });
 
 ### timeout — lazy, per-attempt budget
 
-`timeout(o, ms)` only stores `timeoutMs` on the options — no timer starts until the request executes. Each attempt (including every retry attempt) then gets a **fresh** `AbortSignal.timeout(ms)`, combined with your `signal` via `AbortSignal.any`. Piping `timeout` is side-effect free, so a reused client always gets a full budget; a later `timeout` pipe overwrites an earlier one.
+`timeout(o, ms)` only stores `timeoutMs` on the options — no timer starts until the request executes. Each attempt (including every retry attempt) then gets a **fresh** timeout signal, combined with your `signal` via `AbortSignal.any` (or an equivalent manual composition on runtimes predating it). Piping `timeout` is side-effect free, so a reused client always gets a full budget; a later `timeout` pipe overwrites an earlier one.
 
 ```typescript
 // Each attempt of each request gets 5 seconds, counted from its own start

@@ -11,7 +11,10 @@ import {
   getData,
   setData,
   hasData,
+  applyTimeout,
+  applyTotalTimeout,
 } from '@/util';
+import { TimeoutError } from '@/errors';
 import { notRetryErrorSymbol } from '@/constants';
 
 describe('Util Functions', () => {
@@ -324,6 +327,116 @@ describe('Util Functions', () => {
       expect(res.status).toBe(201);
       expect(res.headers.get('content-type')).toBe('application/json');
       expect(typeof res.json).toBe('function');
+    });
+  });
+
+  describe('applyTimeout / applyTotalTimeout signal fallback', () => {
+    // A fetch stand-in that behaves like native fetch for aborts: it
+    // rejects with the abort reason of whatever signal it was handed.
+    const fetchLike = vi.fn(
+      (_input: unknown, init?: RequestInit) =>
+        new Promise<Response>((resolve, reject) => {
+          const signal = init?.signal;
+          if (!signal) return resolve(new Response('ok'));
+          if (signal.aborted) return reject(signal.reason);
+          signal.addEventListener('abort', () => reject(signal.reason), {
+            once: true,
+          });
+        })
+    );
+
+    const hidden: [string, PropertyDescriptor][] = [];
+
+    const hideStatic = (key: 'timeout' | 'any') => {
+      const desc = Object.getOwnPropertyDescriptor(AbortSignal, key);
+      if (desc) hidden.push([key, desc]);
+      // Reflect form: the no-dynamic-delete lint rule targets `delete obj[k]`
+      // syntax; this is test-only surgery on a well-known static.
+      Reflect.deleteProperty(AbortSignal, key);
+    };
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+      hideStatic('timeout');
+      hideStatic('any');
+    });
+
+    afterEach(() => {
+      for (const [key, desc] of hidden) {
+        Object.defineProperty(AbortSignal, key, desc);
+      }
+      hidden.length = 0;
+      vi.restoreAllMocks();
+    });
+
+    it('still times out through the manual fallback composition', async () => {
+      const wrapped = applyTimeout(fetchLike, 100);
+      const pending = wrapped('https://example.com/slow');
+      vi.advanceTimersByTime(100);
+      let caught: unknown;
+      try {
+        await pending;
+      } catch (e) {
+        caught = e;
+      }
+      expect(caught).toBeInstanceOf(TimeoutError);
+      expect((caught as Error).message).toBe('Request timed out after 100ms');
+      // The reason mirrors native AbortSignal.timeout: a TimeoutError
+      // DOMException, preserved as the library error's cause.
+      expect((caught as TimeoutError).cause).toBeInstanceOf(DOMException);
+      expect(((caught as TimeoutError).cause as Error).name).toBe('TimeoutError');
+    });
+
+    it('lets a user abort propagate unchanged through the manual composite', async () => {
+      const wrapped = applyTimeout(fetchLike, 100);
+      const controller = new AbortController();
+      const pending = wrapped('https://example.com/x', {
+        signal: controller.signal,
+      });
+      controller.abort();
+      // The user's AbortError surfaces as-is — not a TimeoutError.
+      await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    });
+
+    it('rejects immediately when the user signal was already aborted', async () => {
+      const wrapped = applyTimeout(fetchLike, 100);
+      const controller = new AbortController();
+      controller.abort();
+      await expect(
+        wrapped('https://example.com/x', { signal: controller.signal })
+      ).rejects.toMatchObject({ name: 'AbortError' });
+    });
+
+    it('applies the whole-request budget through the fallback', async () => {
+      const wrapped = applyTotalTimeout(fetchLike, 100);
+      const pending = wrapped('https://example.com/slow');
+      vi.advanceTimersByTime(100);
+      let caught: unknown;
+      try {
+        await pending;
+      } catch (e) {
+        caught = e;
+      }
+      expect(caught).toBeInstanceOf(TimeoutError);
+      expect(caught).not.toBeInstanceOf(DOMException);
+      expect(((caught as TimeoutError).cause as Error).name).toBe('TimeoutError');
+    });
+
+    it('keeps a user abort on totalTimeout the caller-owned error', async () => {
+      const wrapped = applyTotalTimeout(fetchLike, 100);
+      const controller = new AbortController();
+      const pending = wrapped('https://example.com/x', {
+        signal: controller.signal,
+      });
+      controller.abort();
+      await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    });
+
+    it('resolves normally when the request finishes inside the budget', async () => {
+      const immediate = vi.fn(async () => new Response('ok'));
+      const wrapped = applyTimeout(immediate, 100);
+      const res = await wrapped('https://example.com/fast');
+      expect(res.status).toBe(200);
     });
   });
 

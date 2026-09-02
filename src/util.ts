@@ -67,12 +67,94 @@ export function requestMethodOf(
 }
 
 /**
+ * Mints the abort reason a native `AbortSignal.timeout` fires with: a
+ * `TimeoutError` `DOMException` (or an `Error` stand-in with the same
+ * `name` on the exotic runtimes that lack a global `DOMException`), so
+ * downstream error classification is identical on every path.
+ */
+function timeoutAbortReason(): unknown {
+  if (typeof DOMException === 'function') {
+    return new DOMException('signal timed out', 'TimeoutError');
+  }
+  const e = new Error('signal timed out');
+  e.name = 'TimeoutError';
+  return e;
+}
+
+/**
+ * Creates a fresh timeout signal for one call, feature-detected per call
+ * so a polyfill (or its absence) is respected at runtime.
+ *
+ * Prefers the native `AbortSignal.timeout(ms)`; when the runtime predates
+ * it (Node.js < 17.3, older browsers) a manual `AbortController` + timer
+ * stands in with the same observable semantics: the signal aborts with a
+ * `TimeoutError`-named reason after `ms`, and the timer never keeps the
+ * event loop alive (`unref`-ed where available).
+ */
+function timeoutSignalOf(ms: number): AbortSignal {
+  if (typeof AbortSignal.timeout === 'function') {
+    return AbortSignal.timeout(ms);
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => {
+    controller.abort(timeoutAbortReason());
+  }, ms);
+  (timer as unknown as { unref?: () => void }).unref?.();
+  return controller.signal;
+}
+
+/**
+ * Combines abort signals into one, feature-detected per call.
+ *
+ * Prefers the native `AbortSignal.any`; when the runtime predates it
+ * (Node.js < 20.3, older browsers) a manual `AbortController` forwards the
+ * first source abort — preserving the source's abort `reason` verbatim, so
+ * a user `AbortError` and a timeout `TimeoutError` stay distinguishable
+ * through the composite exactly as they are natively.
+ */
+function anySignalOf(signals: readonly AbortSignal[]): AbortSignal {
+  if (typeof AbortSignal.any === 'function') {
+    return AbortSignal.any([...signals]);
+  }
+  const controller = new AbortController();
+  const onAbort = (event: Event) => {
+    controller.abort((event.currentTarget as AbortSignal).reason);
+    cleanup();
+  };
+  const cleanup = () => {
+    for (const s of signals) s.removeEventListener('abort', onAbort);
+  };
+  for (const s of signals) {
+    if (s.aborted) {
+      controller.abort(s.reason);
+      return controller.signal;
+    }
+    s.addEventListener('abort', onAbort, { once: true });
+  }
+  return controller.signal;
+}
+
+/**
+ * True when `e` is the abort-shaped rejection a timeout signal produces —
+ * a `DOMException` named 'TimeoutError' natively, or the `Error` stand-in
+ * minted by the manual fallback. (`DOMException` has inherited from
+ * `Error` on every runtime that ships `fetch`, so the wider check is a
+ * strict superset of the previous `e instanceof DOMException` one.)
+ */
+function isTimeoutAbort(e: unknown): e is Error {
+  return e instanceof Error && e.name === 'TimeoutError';
+}
+
+/**
  * Wraps a fetch function with a per-call timeout signal.
  *
- * Each invocation creates a fresh `AbortSignal.timeout(ms)` — so every call,
+ * Each invocation creates a fresh timeout signal — so every call,
  * including every retry attempt by an outer middleware, gets its own time
- * budget — and combines it with any signal already present in `init` using
- * `AbortSignal.any` (requires Node.js >= 20.3.0 or a modern browser).
+ * budget — and combines it with any signal already present in `init`.
+ * Native `AbortSignal.timeout`/`AbortSignal.any` are used when available
+ * (Node.js >= 20.3.0 or a modern browser); older runtimes fall back to an
+ * equivalent manual `AbortController` + timer composition with identical
+ * semantics.
  *
  * A timeout abort surfaces as a {@link TimeoutError} with the underlying
  * `DOMException` attached as `cause`; user-initiated aborts (`AbortError`)
@@ -87,18 +169,14 @@ export function applyTimeout(
   ms: number
 ): typeof globalThis.fetch {
   return async (input, init) => {
-    const timeoutSignal = AbortSignal.timeout(ms);
+    const timeoutSignal = timeoutSignalOf(ms);
     const signal = init?.signal
-      ? AbortSignal.any([init.signal, timeoutSignal])
+      ? anySignalOf([init.signal, timeoutSignal])
       : timeoutSignal;
     try {
       return await f(input, { ...init, signal });
     } catch (e) {
-      if (
-        timeoutSignal.aborted &&
-        e instanceof DOMException &&
-        e.name === 'TimeoutError'
-      ) {
+      if (timeoutSignal.aborted && isTimeoutAbort(e)) {
         throw new TimeoutError(`Request timed out after ${ms}ms`, {
           cause: e,
         });
@@ -114,10 +192,11 @@ export function applyTimeout(
  * Unlike {@link applyTimeout}, which grants every call a fresh budget, the
  * budget here spans the entire wrapped function — every retry attempt made
  * by an inner middleware plus the backoff delays between them. Each
- * invocation creates one `AbortSignal.timeout(ms)` and combines it with any
- * signal already present in `init` using `AbortSignal.any` (requires
- * Node.js >= 20.3.0 or a modern browser), so wrapping `applyTimeout`
- * (nested `AbortSignal.any` compositions) composes cleanly.
+ * invocation creates one timeout signal and combines it with any signal
+ * already present in `init` (natively `AbortSignal.timeout` +
+ * `AbortSignal.any` on Node.js >= 20.3.0 / modern browsers, the manual
+ * fallback composition elsewhere), so wrapping `applyTimeout` (nested
+ * signal compositions) composes cleanly.
  *
  * A timeout abort surfaces as a {@link TimeoutError} with the underlying
  * `DOMException` attached as `cause`; user-initiated aborts
@@ -134,9 +213,9 @@ export function applyTotalTimeout(
 ): typeof globalThis.fetch {
   return async (input, init) => {
     const userSignal = init?.signal;
-    const totalSignal = AbortSignal.timeout(ms);
+    const totalSignal = timeoutSignalOf(ms);
     const signal = userSignal
-      ? AbortSignal.any([userSignal, totalSignal])
+      ? anySignalOf([userSignal, totalSignal])
       : totalSignal;
     try {
       return await f(input, { ...init, signal });
@@ -146,7 +225,7 @@ export function applyTotalTimeout(
       if (
         totalSignal.aborted &&
         !userSignal?.aborted &&
-        e instanceof DOMException &&
+        e instanceof Error &&
         (e.name === 'TimeoutError' || e.name === 'AbortError')
       ) {
         throw new TimeoutError(`Request timed out after ${ms}ms`, {

@@ -530,9 +530,10 @@ export function withRetry(maxRetries: number, opts?: RetryOptions) {
  * individually, so every attempt gets a fresh time budget (per-attempt
  * semantics, matching ky) instead of one budget shared across all attempts.
  *
- * Each call creates a fresh `AbortSignal.timeout(ms)` and combines it with
- * any signal already on the request init via `AbortSignal.any` (Node.js
- * >= 20.3.0 or a modern browser). A timeout abort is rethrown as
+ * Each call creates a fresh timeout signal and combines it with any signal
+ * already on the request init (natively `AbortSignal.timeout` +
+ * `AbortSignal.any` on Node.js >= 20.3.0 / modern browsers, an equivalent
+ * manual composition on older runtimes). A timeout abort is rethrown as
  * {@link TimeoutError} with the underlying `DOMException` as `cause`;
  * user-initiated aborts (`AbortError`) propagate unchanged.
  *

@@ -628,7 +628,9 @@ export function signal<T extends Options>(
  * a later `timeout` pipe overwrites an earlier value. An existing `signal`
  * is honored — both are combined with `AbortSignal.any`.
  *
- * Requires `AbortSignal.any` (Node.js >= 20.3.0 or a modern browser).
+ * Uses native `AbortSignal.any`/`AbortSignal.timeout` when available
+ * (Node.js >= 20.3.0 / modern browsers); older runtimes fall back to an
+ * equivalent manual signal composition.
  *
  * @param o - The options object to modify
  * @param ms - The timeout budget in milliseconds
@@ -665,7 +667,9 @@ export function timeout<T extends Options>(
  * `totalTimeout` pipe overwrites an earlier one. An existing `signal` is
  * honored — both are combined with `AbortSignal.any`.
  *
- * Requires `AbortSignal.any` (Node.js >= 20.3.0 or a modern browser).
+ * Uses native `AbortSignal.any`/`AbortSignal.timeout` when available
+ * (Node.js >= 20.3.0 / modern browsers); older runtimes fall back to an
+ * equivalent manual signal composition.
  *
  * @param o - The options object to modify
  * @param ms - The whole-request timeout budget in milliseconds
