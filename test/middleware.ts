@@ -275,6 +275,36 @@ describe('Middleware Tests', () => {
     expect(elapsed).toBeLessThan(1000); // waited ~0ms, not the 2s backoff
   });
 
+  it('should honor Retry-After from an HTTPError thrown by checkError (rejection path)', async () => {
+    // Real timers: the header rides on the HTTPError's response (the
+    // checkError-thrown rejection), which the retry loop previously never
+    // consulted — Retry-After: 0 must make the retry immediate even though
+    // the (unused) backoff initial is 2s.
+    vi.useRealTimers();
+    const mockFetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response('busy', {
+          status: 429,
+          headers: { 'Retry-After': '0' },
+        })
+      )
+      .mockResolvedValueOnce(new Response('ok'));
+    const client = create({ fetch: mockFetch })
+      .pipe(retry, 2, { delay: { initial: 2000 } })
+      .pipe(checkError, (res) => {
+        if (!res.ok) throw new HTTPError(res);
+      });
+
+    const start = Date.now();
+    const res = await client.pipe(url, 'https://example.com').pipe(fetch);
+    const elapsed = Date.now() - start;
+
+    expect(res.status).toBe(200);
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    expect(elapsed).toBeLessThan(1000); // waited ~0ms, not the 2s backoff
+  });
+
   it('should prefer a future Retry-After HTTP-date over backoff', async () => {
     vi.useRealTimers();
     // +1080ms: toUTCString() truncates to whole seconds, so the offset must

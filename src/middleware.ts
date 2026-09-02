@@ -334,8 +334,19 @@ export function createRetry(
               nextInit = applyInitPatch(nextInit, patch);
           }
 
-          // No response to consult for Retry-After on the rejection path.
-          await waitForBackoff(backoffDelay(attempt, initial, max, multiplier));
+          // An HTTPError from a user checkError middleware carries the
+          // failed response — consult its Retry-After exactly like the
+          // resolved path does, instead of blindly falling back to backoff.
+          const retryAfterMs =
+            respectRetryAfter && e instanceof HTTPError
+              ? parseRetryAfter(
+                  e.response.headers.get('Retry-After'),
+                  maxRetryAfter
+                )
+              : undefined;
+          await waitForBackoff(
+            retryAfterMs ?? backoffDelay(attempt, initial, max, multiplier)
+          );
           attempt += 1;
           continue;
         }
