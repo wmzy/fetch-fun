@@ -285,6 +285,41 @@ describe('Middleware Tests', () => {
     expect(mockFetch).toHaveBeenCalledTimes(1); // immediate rethrow
   });
 
+  it('should stop retrying when the signal aborts during backoff (rejection path)', async () => {
+    // `sleep` resolves on abort by design; without a follow-up check the
+    // loop ran one more doomed attempt. Real timers: the backoff must not
+    // advance under fake timers for the abort to land inside it.
+    vi.useRealTimers();
+    const controller = new AbortController();
+    const mockFetch = vi.fn().mockRejectedValue(new Error('transient'));
+    const client = create({ fetch: mockFetch })
+      .pipe(retry, 3, { delay: { initial: 5000 } })
+      .pipe(signal, controller.signal);
+
+    const pending = client.pipe(url, 'https://example.com').pipe(fetch);
+    setTimeout(() => controller.abort(), 20);
+
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    expect(mockFetch).toHaveBeenCalledTimes(1); // no post-abort attempt
+  });
+
+  it('should stop retrying when the signal aborts during backoff (response path)', async () => {
+    vi.useRealTimers();
+    const controller = new AbortController();
+    const mockFetch = vi
+      .fn()
+      .mockResolvedValue(new Response('unavailable', { status: 503 }));
+    const client = create({ fetch: mockFetch })
+      .pipe(retry, 3, { delay: { initial: 5000 } })
+      .pipe(signal, controller.signal);
+
+    const pending = client.pipe(url, 'https://example.com').pipe(fetch);
+    setTimeout(() => controller.abort(), 20);
+
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    expect(mockFetch).toHaveBeenCalledTimes(1); // no post-abort attempt
+  });
+
   it('should not retry an HTTPError(404) thrown by a checkError middleware', async () => {
     const mockFetch = vi
       .fn()

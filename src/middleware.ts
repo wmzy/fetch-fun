@@ -167,7 +167,9 @@ const DEFAULT_RETRY_METHODS: readonly string[] = [
  * header and `respectRetryAfter` is true — then that value wins, capped
  * at `maxRetryAfter` (default 30s). The discarded response's body is
  * cancelled before retrying to avoid leaks. Waits are interrupted by the
- * client's `signal` (see `sleep`).
+ * client's `signal`: aborting during a backoff stops the loop without a
+ * further attempt and rejects with the signal's abort reason (an
+ * `AbortError` for a plain `controller.abort()`).
  *
  * @param maxRetries - Maximum number of retry attempts (the initial attempt
  * is not counted)
@@ -206,6 +208,16 @@ export function createRetry(
       const method = String(init?.method ?? 'GET').toUpperCase();
       const canRetryMethod = methods.has(method);
 
+      // `sleep` resolves (rather than rejects) when `signal` aborts, so an
+      // aborted backoff would otherwise fall through into one more attempt
+      // that is doomed to fail immediately. Exit with the signal's own
+      // abort reason instead — the AbortError channel callers already
+      // handle for in-flight aborts.
+      const waitForBackoff = async (ms: number) => {
+        await sleep(ms, o.signal);
+        if (o.signal?.aborted) throw o.signal.reason;
+      };
+
       let attempt = 0;
       for (;;) {
         let res: Response;
@@ -235,10 +247,7 @@ export function createRetry(
           }
 
           // No response to consult for Retry-After on the rejection path.
-          await sleep(
-            backoffDelay(attempt, initial, max, multiplier),
-            o.signal
-          );
+          await waitForBackoff(backoffDelay(attempt, initial, max, multiplier));
           attempt += 1;
           continue;
         }
@@ -258,9 +267,8 @@ export function createRetry(
               : undefined;
             // Release the discarded response's body to avoid leaking it.
             res.body?.cancel().catch(() => undefined);
-            await sleep(
-              retryAfterMs ?? backoffDelay(attempt, initial, max, multiplier),
-              o.signal
+            await waitForBackoff(
+              retryAfterMs ?? backoffDelay(attempt, initial, max, multiplier)
             );
             attempt += 1;
             continue;
