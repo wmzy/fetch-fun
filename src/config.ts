@@ -1098,8 +1098,10 @@ export function checkError<T extends Options>(
  * only the finally thrown value is mapped. Every error type passes
  * through the mapper alike: `HTTPError`, `NetworkError`, `TimeoutError`,
  * `ValidationError`, and errors thrown by user middleware. The returned
- * value is thrown as-is (usually a transformed `Error`; throwing from
- * inside the mapper rethrows that instead). Async mappers are awaited.
+ * value is thrown as-is (usually a transformed `Error`); returning
+ * `undefined` passes the original error through unchanged, and a mapper
+ * that itself throws keeps its own error, chained to the original as
+ * `cause`, so neither is swallowed. Async mappers are awaited.
  * For `HTTPError` the mapper receives the failed `response` and the
  * originating `request` in `ctx`; otherwise `ctx` is empty.
  *

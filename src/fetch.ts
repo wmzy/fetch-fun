@@ -315,8 +315,11 @@ function bestEffortRequest(o: Fetchable): Request | undefined {
  *
  * When `mapError()` attached an error mapper, it runs here as the last
  * hop: the mapper's return value (awaited when async) is thrown instead
- * of the original error, whatever its type. The raw `fetch()` escape
- * hatch bypasses the mapper entirely.
+ * of the original error, whatever its type — with two guardrails: a
+ * mapper returning `undefined` passes the original error through, and a
+ * mapper that itself throws keeps its own error chained to the original
+ * as `cause`. The raw `fetch()` escape hatch bypasses the mapper
+ * entirely.
  *
  * @template T - Optional override for the resolved data type
  * @template O - The fetchable configuration type (inferred)
@@ -357,8 +360,40 @@ export async function fetchData<T = never, O extends Fetchable = Fetchable>(
       e instanceof HTTPError
         ? { response: e.response, request: e.request }
         : {};
-    throw await mapper(e, ctx);
+    let mapped: unknown;
+    try {
+      mapped = await mapper(e, ctx);
+    } catch (mapperError) {
+      // A failing mapper must never swallow the original error: its own
+      // throw surfaces, chained to the original (see wrapMapperError).
+      throw wrapMapperError(mapperError, e);
+    }
+    // Returning undefined passes the original error through — a partial
+    // mapper (branching on error type) can leave branches unmapped without
+    // accidentally rejecting with undefined.
+    if (mapped === undefined) throw e;
+    throw mapped;
   }
+}
+
+/**
+ * Chains a `mapError` mapper's own failure to the original error so
+ * neither is lost. An `Error` without a `cause` keeps its identity and
+ * gains the original error as `cause`; anything else (a non-Error thrown
+ * value, or an Error already carrying a cause) is wrapped in a
+ * descriptive `Error` whose `cause` holds both values.
+ */
+function wrapMapperError(mapperError: unknown, original: unknown): unknown {
+  if (
+    mapperError instanceof Error &&
+    (mapperError as { cause?: unknown }).cause === undefined
+  ) {
+    mapperError.cause = original;
+    return mapperError;
+  }
+  return new Error('fetch-fun: the mapError mapper itself threw', {
+    cause: { mapperError, original },
+  });
 }
 
 /**

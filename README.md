@@ -470,6 +470,8 @@ const user = await client
 Key semantics:
 
 - **Every error type passes through** — `HTTPError`, `NetworkError`, `TimeoutError`, `ValidationError`, and errors thrown by user middlewares alike. The mapper's return value is thrown as-is; async mappers are awaited.
+- **`undefined` passes the original through** — a mapper that returns `undefined` (e.g. a branch that found nothing to map) rejects with the original error, never with `undefined` itself.
+- **A failing mapper never swallows the original** — if the mapper itself throws, its own error surfaces with the original attached as `cause` (an `Error` without one gains it; a non-`Error` thrown value is wrapped in an `Error` whose `cause` carries both).
 - **`retry` sees the original error** — the mapper runs after the whole middleware chain (including retry) has settled, so retry decisions are made on the unmapped error; only the finally thrown value is mapped.
 - **Piping `mapError` again replaces** the previous mapper — the same overwrite semantics as `timeout`.
 - **Only `fetchData`/`fetchJSON` map** — the raw `fetch()` escape hatch bypasses the mapper entirely and rejects with the original error.

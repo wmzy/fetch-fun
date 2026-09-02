@@ -189,6 +189,93 @@ describe('Fetch Tests', () => {
     );
   });
 
+  it('should rethrow the original error when the mapError mapper returns undefined', async () => {
+    const mockFetch = vi
+      .fn()
+      .mockResolvedValue(new Response('Not Found', { status: 404 }));
+    const seen: unknown[] = [];
+    const instance = ff
+      .create({ url: '/test', fetch: mockFetch })
+      .pipe(ff.json)
+      .pipe(
+        ff.mapError,
+        (e: unknown) => {
+          // A partial mapper: nothing to map for this branch — the
+          // deliberate undefined return must pass the original through.
+          seen.push(e);
+        }
+      );
+
+    let caught: unknown;
+    try {
+      await ff.fetchData(instance);
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(ff.HTTPError);
+    expect(caught).toBe(seen[0]); // identity preserved, not a copy
+  });
+
+  it('should chain the original error as cause when the mapError mapper itself throws', async () => {
+    const mockFetch = vi
+      .fn()
+      .mockResolvedValue(new Response('Not Found', { status: 404 }));
+    let original: unknown;
+    const instance = ff
+      .create({ url: '/test', fetch: mockFetch })
+      .pipe(ff.json)
+      .pipe(
+        ff.mapError,
+        (e: unknown) => {
+          original = e;
+          throw new Error('mapper exploded');
+        }
+      );
+
+    let caught: unknown;
+    try {
+      await ff.fetchData(instance);
+    } catch (e) {
+      caught = e;
+    }
+    // The mapper's own error surfaces (never swallowed into a generic one)…
+    expect((caught as Error).message).toBe('mapper exploded');
+    // …and the original HTTPError rides along as its cause.
+    expect((caught as Error).cause).toBe(original);
+    expect((caught as Error).cause).toBeInstanceOf(ff.HTTPError);
+  });
+
+  it('should wrap a non-Error mapError mapper throw without losing either value', async () => {
+    const mockFetch = vi
+      .fn()
+      .mockResolvedValue(new Response('Not Found', { status: 404 }));
+    const instance = ff
+      .create({ url: '/test', fetch: mockFetch })
+      .pipe(ff.json)
+      .pipe(
+        ff.mapError,
+        () => {
+          // Not an Error: cannot carry a cause, so both values are packed
+          // into a wrapping Error's cause.
+          throw 'boom';
+        }
+      );
+
+    let caught: unknown;
+    try {
+      await ff.fetchData(instance);
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    const cause = (caught as Error).cause as {
+      mapperError: unknown;
+      original: unknown;
+    };
+    expect(cause.mapperError).toBe('boom');
+    expect(cause.original).toBeInstanceOf(ff.HTTPError);
+  });
+
   it('should keep retry decisions on the original error when mapError is piped', async () => {
     const mockFetch = vi
       .fn()
