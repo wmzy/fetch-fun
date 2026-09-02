@@ -670,6 +670,71 @@ describe('Error Handling Integration Tests', () => {
       expect(original.message).toContain('status 401');
     });
 
+    it('withMessage inherits fields added after construction via the prototype', () => {
+      const original = new HTTPError(
+        new Response(null, { status: 418, statusText: "I'm a teapot" })
+      );
+      // A field this version of the class knows nothing about — attached
+      // by user middleware, a subclass, or future library versions. The
+      // old field-copying clone would have dropped it.
+      (original as unknown as Record<string, unknown>).correlationId =
+        'abc-123';
+
+      const clone = original.withMessage('teapot');
+
+      // Identity, accessors, and methods all survive the prototype clone.
+      expect(clone).toBeInstanceOf(HTTPError);
+      expect(clone).not.toBe(original);
+      expect(clone.status).toBe(418);
+      expect(clone.response).toBe(original.response);
+      expect(clone.message).toBe('teapot');
+      expect(clone.toJSON()).toMatchObject({
+        name: 'HTTPError',
+        status: 418,
+        message: 'teapot',
+      });
+      // The unknown field is visible on the clone without HTTPError
+      // knowing it exists…
+      expect(
+        (clone as unknown as Record<string, unknown>).correlationId
+      ).toBe('abc-123');
+      // …and keeps working through chained clones and methods.
+      const twice = clone.withMessage('short and stout');
+      expect(twice).toBeInstanceOf(HTTPError);
+      expect(twice.message).toBe('short and stout');
+      expect(
+        (twice as unknown as Record<string, unknown>).correlationId
+      ).toBe('abc-123');
+      // The original is untouched.
+      expect(original.message).toContain('418');
+    });
+
+    it('withMessage preserves subclass identity and subclass fields', () => {
+      class TaggedHTTPError extends HTTPError {
+        tag = 'from-checkError';
+      }
+      const sub = new TaggedHTTPError(
+        new Response(null, { status: 503, statusText: 'Service Unavailable' })
+      );
+
+      const clone = sub.withMessage('degraded');
+      expect(clone).toBeInstanceOf(TaggedHTTPError);
+      expect(clone).toBeInstanceOf(HTTPError);
+      expect((clone as TaggedHTTPError).tag).toBe('from-checkError');
+      expect(clone.status).toBe(503);
+    });
+
+    it('withMessage shares the original stack instead of capturing a new one', () => {
+      const original = new HTTPError(
+        new Response(null, { status: 500, statusText: '' })
+      );
+      const clone = original.withMessage('rewritten');
+      // Documented behavior: the clone inherits the original's stack (the
+      // original construction site), it does not capture a fresh one at
+      // the withMessage call.
+      expect(clone.stack).toBe(original.stack);
+    });
+
     it('withMessage in mapError keeps instanceof/status/data for downstream handlers', async () => {
       // The documented pattern: rewrite the message from the parsed body,
       // keep everything the global handlers branch on.

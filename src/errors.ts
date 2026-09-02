@@ -55,12 +55,21 @@ export class HTTPError extends Error {
   }
 
   /**
-   * Returns a clone of this error with `message` replaced, preserving
-   * `response`, `request`, `data`, and `cause` — the ergonomic way to swap
-   * in a human-readable message (e.g. from the parsed error body) without
-   * losing the `HTTPError` identity: `instanceof` checks, `status`, and
-   * `data` all keep working downstream. The original error is untouched;
-   * the clone's stack points at the `withMessage` call site.
+   * Returns a clone of this error with `message` replaced — the ergonomic
+   * way to swap in a human-readable message (e.g. from the parsed error
+   * body) without losing the `HTTPError` identity: `instanceof` checks,
+   * `status`, and `data` all keep working downstream. The original error
+   * is untouched.
+   *
+   * The clone is created with this error as its prototype, so it inherits
+   * **every** own field of the original — `response`, `request`, `data`,
+   * `cause`, and anything a subclass or caller attached after
+   * construction — instead of a hand-maintained copy list that would
+   * silently miss fields added later. Only `message` is overridden.
+   *
+   * `stack` is inherited from the original as well: the clone reports the
+   * original error's construction site, not a fresh stack captured at the
+   * `withMessage` call.
    *
    * @example
    * ```ts
@@ -70,11 +79,11 @@ export class HTTPError extends Error {
    * ```
    */
   withMessage(message: string): HTTPError {
-    const clone = new HTTPError(this.response, this.request, {
-      cause: this.cause,
-    });
+    // Prototype clone: inherits every own property of the original —
+    // including fields this class does not know about — with only
+    // `message` overridden as an own property.
+    const clone = Object.create(this) as HTTPError;
     clone.message = message;
-    clone.data = this.data;
     return clone;
   }
 
