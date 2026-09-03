@@ -628,7 +628,7 @@ Why these defaults fit a browser app:
 | Export | Purpose |
 | --- | --- |
 | `create(o?)` | Create a client (`Options & Pipe`) from initial options |
-| `toFetchParams(o)` | Convert a `Fetchable` to `[url, RequestInit]` (performs the baseUrl join) |
+| `toFetchParams(o)` | Convert a `Fetchable` to `[url, RequestInit]` (performs the baseUrl join); keys that are neither fetch-fun options nor `RequestInit` fields pass through to fetch silently — in development each one logs a `console.warn` naming it (silent in production) |
 | `applyMiddlewares(f, o)` | Sort and apply a configuration's middlewares to a fetch function |
 | `sortMiddlewares(entries)` | Topological sort of middleware entries (outer → inner); throws on duplicates/cycles |
 | `normalizeMiddleware(input)` | Normalize a function or config object into a `MiddlewareEntry` |

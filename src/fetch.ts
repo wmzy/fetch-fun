@@ -57,11 +57,53 @@ function joinUrl(baseUrl: string | undefined, url: string): string {
 }
 
 /**
+ * Option keys `toFetchParams` consumes itself before the remainder is
+ * handed to fetch as `RequestInit`.
+ */
+const LIBRARY_OPTION_KEYS =
+  'baseUrl,url,searchParams,fetch,middlewares,pipe,add,with,timeoutMs,totalTimeoutMs'.split(
+    ','
+  );
+
+/**
+ * The `RequestInit` fields native fetch understands — plus `dispatcher`
+ * (undici) and `duplex` (stream bodies), which the DOM lib types lag
+ * behind on. Anything else riding on the options object is unrecognized:
+ * it is not a fetch-fun option and fetch will ignore it.
+ */
+const REQUEST_INIT_KEYS =
+  'method,headers,body,mode,credentials,cache,redirect,referrer,referrerPolicy,integrity,keepalive,signal,window,dispatcher,duplex'.split(
+    ','
+  );
+
+const KNOWN_OPTION_KEYS = new Set([...LIBRARY_OPTION_KEYS, ...REQUEST_INIT_KEYS]);
+
+/**
+ * Development-only diagnostic: names every option key that is neither a
+ * fetch-fun option nor a `RequestInit` field, so a typo like
+ * `customeHeader` (or a stale key after a rename) is visible instead of
+ * silently riding the config into fetch's blind spot. Silent in
+ * production — bundlers that replace `process.env.NODE_ENV` fold the
+ * call site's guard to `false` and drop this path entirely.
+ */
+function warnUnknownOptionKeys(rest: RequestInit): void {
+  for (const key of Object.keys(rest)) {
+    if (!KNOWN_OPTION_KEYS.has(key)) {
+      console.warn(
+        `fetch-fun: ignoring unknown option "${String(key)}" — it is neither a fetch-fun option nor a RequestInit field, so fetch will not receive it`
+      );
+    }
+  }
+}
+
+/**
  * Converts a Fetchable configuration to fetch parameters.
  *
  * Extracts the URL (combining baseUrl and url with slash normalization —
  * see {@link joinUrl}) and RequestInit options from the configuration
- * object.
+ * object. Keys that are neither fetch-fun options nor `RequestInit`
+ * fields pass through to fetch untouched and unnoticed by the types —
+ * in development (non-production `NODE_ENV`) each one logs a `console.warn`.
  *
  * @param o - The fetchable configuration
  * @returns A tuple of [url, requestInit] for use with fetch
@@ -87,6 +129,14 @@ export function toFetchParams(o: Fetchable): [string, RequestInit] {
     totalTimeoutMs,
     ...rest
   } = o as Fetchable & Pipe;
+
+  // Dev-only diagnostics; erased by production bundling.
+  if (
+    typeof process !== 'undefined' &&
+    process.env.NODE_ENV !== 'production'
+  ) {
+    warnUnknownOptionKeys(rest);
+  }
 
   // Build final URL: baseUrl + url + searchParams
   let finalUrl = joinUrl(baseUrl, url);

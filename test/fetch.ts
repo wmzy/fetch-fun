@@ -314,6 +314,57 @@ describe('Fetch Tests', () => {
     }
   });
 
+  it('should warn about unrecognized option keys in development', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const mockFetch = vi.fn().mockResolvedValue(new Response('Success'));
+    // A typo'd option — the types reject it on literals, so it arrives via
+    // a cast, a shared config object, or a JS caller.
+    const instance = ff.create({
+      url: '/test',
+      fetch: mockFetch,
+      customeHeader: 'x',
+    } as any);
+
+    await ff.fetch(instance);
+
+    expect(mockFetch).toHaveBeenCalledWith('/test', { customeHeader: 'x' });
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy.mock.calls[0]![0]).toContain('customeHeader');
+    warnSpy.mockRestore();
+  });
+
+  it('should stay silent for known options, and for unknown ones in production', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const mockFetch = vi.fn().mockResolvedValue(new Response('Success'));
+    // Everything the library itself stores is fine: lib keys, RequestInit
+    // fields, and the pipe protocol members.
+    const instance = ff
+      .create({ url: '/test', fetch: mockFetch, baseUrl: 'https://x.y' })
+      .pipe(ff.header, 'Accept', 'application/json')
+      .pipe(ff.timeout, 1000)
+      .pipe(ff.totalTimeout, 5000)
+      .pipe(ff.signal, new AbortController().signal);
+
+    await ff.fetch(instance);
+    expect(warnSpy).not.toHaveBeenCalled();
+
+    // Production builds stay silent even for genuinely unknown keys.
+    const prod = ff.create({
+      url: '/test',
+      fetch: mockFetch,
+      typo: 1,
+    } as any);
+    const previousNodeEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'production';
+    try {
+      await ff.fetch(prod);
+    } finally {
+      process.env.NODE_ENV = previousNodeEnv;
+    }
+    expect(warnSpy).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
   it('should pass protocol-relative URLs through untouched with baseUrl', async () => {
     const mockFetch = vi.fn().mockResolvedValue(new Response('Success'));
     const instance = ff.create({
