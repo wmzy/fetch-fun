@@ -19,6 +19,11 @@ import {
   requestMethodOf,
 } from './util';
 
+// Node-less 类型环境（tsconfig.build 无 @types/node）下的模块级最小声明：
+// 仅供 DEV 诊断开关判别使用。保留 `process.env.NODE_ENV` 字面量拼写，
+// 打包器的 define/替换（生产折叠）不受影响。
+declare const process: {env: {NODE_ENV?: string}} | undefined;
+
 /**
  * Reports whether `url` parses as an absolute URL (i.e. carries its own
  * protocol), in which case it bypasses `baseUrl` entirely.
