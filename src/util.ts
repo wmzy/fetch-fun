@@ -137,12 +137,19 @@ function anySignalOf(signals: readonly AbortSignal[]): AbortSignal {
 /**
  * True when `e` is the abort-shaped rejection a timeout signal produces —
  * a `DOMException` named 'TimeoutError' natively, or the `Error` stand-in
- * minted by the manual fallback. (`DOMException` has inherited from
- * `Error` on every runtime that ships `fetch`, so the wider check is a
- * strict superset of the previous `e instanceof DOMException` one.)
+ * minted by the manual fallback. Discriminated by `name` (duck-typed)
+ * instead of `instanceof`: embedded test realms (jsdom inside vitest) can
+ * expose a `DOMException` whose prototype chain carries a *different*
+ * `Error` constructor than the one this module's realm sees, so every
+ * instanceof check fails there. Callers already scope the claim to their
+ * own aborted signal, so a name match cannot steal a foreign error.
  */
-function isTimeoutAbort(e: unknown): e is Error {
-  return e instanceof Error && e.name === 'TimeoutError';
+function isAbortNamed(e: unknown, ...names: string[]): boolean {
+  return (
+    !!e &&
+    typeof e === 'object' &&
+    names.includes((e as {name?: unknown}).name as string)
+  );
 }
 
 /**
@@ -176,7 +183,7 @@ export function applyTimeout(
     try {
       return await f(input, { ...init, signal });
     } catch (e) {
-      if (timeoutSignal.aborted && isTimeoutAbort(e)) {
+      if (timeoutSignal.aborted && isAbortNamed(e, 'TimeoutError')) {
         throw new TimeoutError(`Request timed out after ${ms}ms`, {
           cause: e,
         });
@@ -222,11 +229,11 @@ export function applyTotalTimeout(
     } catch (e) {
       // Only claim the error when our own budget elapsed and the user's
       // signal is still intact — otherwise the abort belongs to the caller.
+      // Name-duck-typed for the same cross-realm reason as isAbortNamed.
       if (
         totalSignal.aborted &&
         !userSignal?.aborted &&
-        e instanceof Error &&
-        (e.name === 'TimeoutError' || e.name === 'AbortError')
+        isAbortNamed(e, 'TimeoutError', 'AbortError')
       ) {
         throw new TimeoutError(`Request timed out after ${ms}ms`, {
           cause: e,

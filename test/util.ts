@@ -387,6 +387,33 @@ describe('Util Functions', () => {
       expect(((caught as TimeoutError).cause as Error).name).toBe('TimeoutError');
     });
 
+    it('claims a cross-realm TimeoutError rejection by name, not instanceof', async () => {
+      // Realm-mismatch regression (jsdom embedded in vitest): the fetch
+      // rejection carries name 'TimeoutError' yet fails every instanceof
+      // check of this module's realm. Discrimination must be name-based.
+      const foreign = {name: 'TimeoutError', message: 'Signal timed out.'};
+      const foreignFetch = vi.fn(
+        (_input: unknown, init?: RequestInit) =>
+          new Promise<Response>((_resolve, reject) => {
+            const signal = init?.signal;
+            if (!signal) return;
+            if (signal.aborted) return reject(foreign);
+            signal.addEventListener('abort', () => reject(foreign), {
+              once: true,
+            });
+          })
+      );
+      const wrapped = applyTimeout(foreignFetch, 100);
+      const pending = wrapped('https://example.com/slow');
+      vi.advanceTimersByTime(100);
+      const caught = await pending.catch((e: unknown) => e);
+      expect(caught).toBeInstanceOf(TimeoutError);
+      expect((caught as TimeoutError).message).toBe(
+        'Request timed out after 100ms'
+      );
+      expect((caught as TimeoutError).cause).toBe(foreign);
+    });
+
     it('lets a user abort propagate unchanged through the manual composite', async () => {
       const wrapped = applyTimeout(fetchLike, 100);
       const controller = new AbortController();
