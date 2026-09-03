@@ -19,10 +19,11 @@ import type {
   MiddlewareEntry,
   Options,
   PlaceholderParams,
+  TypedURLSearchParams,
 } from './types';
 
 import { readDataSymbol } from './constants';
-import { json, jsonBody, method, path, url } from './config';
+import { json, jsonBody, method, path, query, url } from './config';
 
 /**
  * OpenAPI operation ids — the method keys under a path, excluding
@@ -55,19 +56,51 @@ export type JsonBody<O> = O extends {
   : unknown;
 
 /**
- * JSON payload of an operation's success response — 200 first, 201 as
- * fallback (`unknown` when neither defines JSON content). Extend the chain
- * for other status codes.
+ * A response object declaring `application/json` content — the pattern
+ * every success-schema arm of {@link JsonOk} matches.
  */
-export type JsonOk<O> = O extends {
-  responses: { 200: { content: { 'application/json': infer D } } };
-}
-  ? D
-  : O extends {
-      responses: { 201: { content: { 'application/json': infer D } } };
-    }
+type JsonContent<D> = { content: { 'application/json': D } };
+
+/**
+ * JSON payload of an operation's success response: the first 2xx status
+ * whose response declares `application/json` content, checked in the
+ * order 200, 201, 202, 203, 206, 226, then the `'2XX'` range — the
+ * codes real specs use for JSON successes (`204` and `205` carry no
+ * body, so a spec typing them with JSON content is not consulted).
+ * Resolves to `unknown` when no enumerated 2xx response declares JSON
+ * content; when several do, the earliest in that order wins, so a
+ * `200`+`202` spec reads as the `200` schema.
+ */
+export type JsonOk<O> =
+  O extends { responses: { 200: JsonContent<infer D> } }
     ? D
-    : unknown;
+    : O extends { responses: { 201: JsonContent<infer D> } }
+      ? D
+      : O extends { responses: { 202: JsonContent<infer D> } }
+        ? D
+        : O extends { responses: { 203: JsonContent<infer D> } }
+          ? D
+          : O extends { responses: { 206: JsonContent<infer D> } }
+            ? D
+            : O extends { responses: { 226: JsonContent<infer D> } }
+              ? D
+              : O extends { responses: { '2XX': JsonContent<infer D> } }
+                ? D
+                : unknown;
+
+/**
+ * The query-parameter object a path accepts: the path item's
+ * `parameters.query` record from the generated `paths` type, every entry
+ * optional (omit the whole call to send none), values typed as the spec
+ * declares them and stringified at runtime. `undefined` when the path
+ * declares no query parameters — there is nothing valid to pass.
+ */
+export type QueryParams<paths, U extends PathKey<paths>> =
+  paths[U] extends { parameters: { query?: infer Q } }
+    ? Q extends Record<string, unknown>
+      ? { [K in keyof Q]?: Q[K] }
+      : undefined
+    : undefined;
 
 /**
  * Binds one OpenAPI `paths` type to the typed pipe helpers. The type
@@ -114,6 +147,41 @@ export function createOpenapi<paths>() {
     path(o, template, params) as Omit<T, 'url'> & { url: U };
 
   /**
+   * Query parameters must be the path item's `parameters.query` record —
+   * a key the spec does not declare is a compile error, and a path
+   * without query parameters accepts nothing. Every entry is optional;
+   * values keep their spec types (`number`, `boolean`, arrays for
+   * repeated keys) and are stringified at runtime, arrays expanding to
+   * repeated keys. Delegates to the config-side `query`, so the whole
+   * untyped pipe surface (`mergeQuery`, `querySet`, ...) stays in play.
+   *
+   * Note: operation-level `parameters` (declared inside a single `get`/
+   * `post`/...) are not consulted — merge those specs into the path-item
+   * level, or use the untyped `query` for them.
+   */
+  const typedQuery = <T extends Options, U extends PathKey<paths>>(
+    o: T & { url: U },
+    params: QueryParams<paths, U>
+  ): Omit<T, 'searchParams'> & {
+    url: U;
+    searchParams: TypedURLSearchParams;
+  } => {
+    const entries: [string, string][] = [];
+    for (const [key, value] of Object.entries(params ?? {})) {
+      if (value == null) continue;
+      if (Array.isArray(value)) {
+        for (const item of value) entries.push([key, String(item)]);
+      } else {
+        entries.push([key, String(value)]);
+      }
+    }
+    return query(o, entries) as Omit<T, 'searchParams'> & {
+      url: U;
+      searchParams: TypedURLSearchParams;
+    };
+  };
+
+  /**
    * Method must be an operation that exists under the path — `'/tags' +
    * 'post'` or the generated `parameters` key both fail to compile. The
    * stored method is the uppercase form, matched by the readers below.
@@ -129,41 +197,64 @@ export function createOpenapi<paths>() {
 
   /**
    * Body must satisfy the operation's requestBody schema — a misspelled
-   * or wrongly-typed field is a compile error. The operation id is passed
-   * again (lowercase) to look the schema up.
+   * or wrongly-typed field is a compile error.
+   *
+   * The lowercase operation id may be echoed to pin the lookup
+   * (`typedJsonBody(o, 'post', body)`), or omitted entirely
+   * (`typedJsonBody(o, body)`) — the operation is then inferred from the
+   * method phantom type set by `typedMethod`, and the body is checked
+   * against that operation's schema.
    */
   const typedJsonBody = <
     T extends Options,
     U extends PathKey<paths>,
-    M extends keyof paths[U] & Op,
+    MM extends Uppercase<keyof paths[U] & Op> = Uppercase<
+      keyof paths[U] & Op
+    >,
+    M extends Lowercase<MM> & keyof paths[U] & Op = Lowercase<MM> &
+      keyof paths[U] &
+      Op,
   >(
-    o: T & { url: U; method: Uppercase<M> },
-    m: M,
-    body: JsonBody<paths[U][M]>
-  ) => jsonBody(o, body);
+    o: T & { url: U; method: MM },
+    mOrBody: M | JsonBody<paths[U][M]>,
+    body?: JsonBody<paths[U][M]>
+  ) =>
+    jsonBody(o, body !== undefined ? body : mOrBody);
 
   /**
-   * Reads the response as the operation's success schema (200, else 201 —
-   * see {@link JsonOk}), so `fetchData`'s return type converges with no
-   * manual type arguments. Requires the method already set by
-   * {@link typedMethod} to be `Uppercase<M>` — the method and the reader
-   * cannot drift apart.
+   * Reads the response as the operation's success schema (see
+   * {@link JsonOk} — first JSON-carrying 2xx, 200 before 201), so
+   * `fetchData`'s return type converges with no manual type arguments.
+   *
+   * The lowercase operation id may be echoed to pin the lookup
+   * (`typedJson(o, 'get')`), or omitted (`typedJson(o)`) — the operation
+   * is then inferred from the method phantom type set by
+   * `typedMethod`. An echoed id that disagrees with the stored method
+   * fails to compile: the method and the reader cannot drift apart.
    */
   const typedJson = <
     T extends Options,
     U extends PathKey<paths>,
-    M extends keyof paths[U] & Op,
+    MM extends Uppercase<keyof paths[U] & Op> = Uppercase<
+      keyof paths[U] & Op
+    >,
+    M extends Lowercase<MM> & keyof paths[U] & Op = Lowercase<MM> &
+      keyof paths[U] &
+      Op,
   >(
-    o: T & { url: U; method: Uppercase<M> },
-    // Inference anchor for M — Uppercase<M> is not invertible, so the
-    // operation id must be passed (and is never read at runtime).
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    m: M
-  ): (T & { url: U; method: Uppercase<M> }) & {
+    o: T & { url: U; method: MM },
+    m?: M
+  ): (T & { url: U; method: MM }) & {
     middlewares: [MiddlewareEntry, ...MiddlewareEntry[]];
     [readDataSymbol]: (res: Response) => Promise<JsonOk<paths[U][M]>>;
-  } =>
-    json<T & { url: U; method: Uppercase<M> }, JsonOk<paths[U][M]>>(o);
+  } => json<T & { url: U; method: MM }, JsonOk<paths[U][M]>>(o);
 
-  return { typedUrl, typedPath, typedMethod, typedJsonBody, typedJson };
+  return {
+    typedUrl,
+    typedPath,
+    typedQuery,
+    typedMethod,
+    typedJsonBody,
+    typedJson,
+  };
 }
