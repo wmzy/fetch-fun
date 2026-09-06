@@ -254,17 +254,15 @@ describe('Adapters Integration Tests', () => {
       expect(mockFetch).not.toHaveBeenCalled();
     });
 
-    it('should reject fetch when duplicate middleware names are registered', async () => {
+    it('should throw at composition time when duplicate middleware names are piped', () => {
       const mockFetch = vi.fn().mockResolvedValue(new Response('ok'));
 
       const client = create({
         fetch: mockFetch,
         url: 'https://example.com/duplicate',
-      })
-        .pipe(use, withRetry(3))
-        .pipe(use, withRetry(3));
+      }).pipe(use, withRetry(3));
 
-      await expect(async () => client.pipe(fetch)).rejects.toThrow(
+      expect(() => client.pipe(use, withRetry(3))).toThrow(
         /Duplicate middleware name "builtin:retry"/
       );
       expect(mockFetch).not.toHaveBeenCalled();

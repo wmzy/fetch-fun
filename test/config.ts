@@ -309,6 +309,25 @@ describe('config-build', function () {
     expect(result.middlewares[0].name).toBe('builtin:retry');
   });
 
+  it('use rejects a duplicate middleware name at composition time', function () {
+    expect(() => use(use({}, withRetry(3)), withRetry(5))).toThrow(
+      /Duplicate middleware name "builtin:retry"/
+    );
+  });
+
+  it('use still appends anonymous functions with unique names', function () {
+    const mw: MiddlewareFn = (f) => f;
+    const result = use(use({}, mw), mw);
+    expect(result.middlewares).toHaveLength(2);
+    expect(result.middlewares[0].name).not.toBe(result.middlewares[1].name);
+  });
+
+  it('middlewares rejects duplicate names within the list', function () {
+    expect(() => middlewares({}, [withRetry(3), withRetry(5)])).toThrow(
+      /Duplicate middleware name "builtin:retry"/
+    );
+  });
+
   it('middlewares type inference', function () {
     const mw: MiddlewareFn = (f) => f;
     const result = middlewares({}, [withRetry(3), withTimeout(5000), mw]);

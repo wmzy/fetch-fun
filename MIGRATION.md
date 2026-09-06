@@ -224,7 +224,7 @@ import { fetch } from 'fetch-fun/dist/index.mjs'; // deep import, new path
 
 - **URL joining is slash-normalized.** Trailing slashes on `baseUrl` and leading slashes on `url` collapse into a single `/`, and an absolute `url` (own protocol) bypasses `baseUrl` entirely. 0.4.x concatenated the two strings verbatim. `../` segments in the path are preserved as-is — the join is textual splicing, not URL resolution, so the server receives the dot segments.
 - **Protocol-relative URLs bypass `baseUrl`.** A `url` starting with `//` now passes through untouched, inheriting the caller's protocol. 0.4.x silently concatenated it onto the `baseUrl` prefix, sending the request to a path under the base instead of the intended host.
-- **Middleware misconfiguration now throws.** Duplicate middleware names and dependency cycles throw with a named message. 0.4.x silently overwrote duplicate names and fell back to pipe order on cycles (with a `console.warn`).
+- **Middleware misconfiguration now throws.** Duplicate middleware names throw at composition time — when the colliding `use` / `middlewares` pipe runs — and dependency cycles throw at execution time, both with a named message. 0.4.x silently overwrote duplicate names and fell back to pipe order on cycles (with a `console.warn`).
 - **`fetch()` returns the real `Response`.** Reader middlewares (`json`, `text`, `blob`, `data`) store parsed data in a WeakMap instead of returning a spread copy of the response — in 0.4.x, once a reader ran, the value from `fetch()` lost the `Response` prototype (`.status`, `.headers`, `.body` read as `undefined`). `getData(res)` works exactly as before.
 - **Opaque (`no-cors`) responses no longer throw `HTTPError`.** A response with `type: 'opaque'` (status `0`) resolves from `fetchData` / `fetchJSON` like any other response — matching ky 2.0 — instead of rejecting with an uninformative `HTTPError`; any problem reading the opaque body surfaces from the reader itself.
 - **`Retry-After` is honored and capped.** A parseable, non-past `Retry-After` header (integer seconds or HTTP-date) overrides the backoff delay, clamped to `maxRetryAfter` (default `30000` ms) — the retry still happens, just sooner than the server demanded.
@@ -309,6 +309,14 @@ const api = ff
   .create({ baseUrl: 'https://api.example.com' })
   .pipe(ff.accept, 'application/json');
 const usersApi = api.pipe(ff.baseUrl, 'https://api.example.com/users'); // api itself unchanged
+```
+
+Middleware chains are append-only: a derived client adds layers onto everything its parent registered — it cannot replace one. ky's `extend({ retry: { limit: 5 } })` overrides because `retry` is an option slot in ky; in fetch-fun retry is a middleware, so to vary a policy per client, factor the shared construction:
+
+```typescript
+const makeClient = (retries: number) =>
+  ff.create().pipe(ff.use, ff.withRetry(retries));
+const normal = makeClient(3), aggressive = makeClient(5);
 ```
 
 Three URL cases worth knowing when moving off `prefixUrl` / `prefix`:

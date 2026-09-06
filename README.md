@@ -551,9 +551,17 @@ Null-body responses (`204`/`205`/`HEAD`, …) are returned untouched and produce
 
 Ordering rules (applied by `sortMiddlewares`, a topological sort):
 
-- **Duplicate names throw** — `Duplicate middleware name "..."` — including two `builtin:retry`s; use `pipe(retry, n)` / bare functions, which generate unique anonymous names, when you need several of a kind.
-- **Cycles throw** — `Middleware dependency cycle detected: a -> b -> a`.
+- **Duplicate names throw at composition time** — piping a middleware whose explicit name is already on the chain throws immediately in `use` / `middlewares` (`Duplicate middleware name "..."`), including a second `builtin:retry`; use `pipe(retry, n)` / bare functions, which generate unique anonymous names, when you need several of a kind.
+- **Cycles throw** — `Middleware dependency cycle detected: a -> b -> a` (resolved at execution time).
 - **Dangling constraints are ignored** — an `outer`/`inner` referencing an unregistered name (other than `NORMAL`) orders nothing and never creates a cycle.
+
+Chains are **append-only**: every `use` adds a layer, derived clients inherit the parent's chain unchanged, and nothing replaces a middleware by name. To vary a layer's policy per client — say, retry 5 times instead of 3 — factor the shared construction rather than overriding on a derived client:
+
+```typescript
+const makeClient = (retries: number) =>
+  create().pipe(use, withRetry(retries)).pipe(use, withAuth(token));
+const normal = makeClient(3), aggressive = makeClient(5);
+```
 
 Positioning is resolved at execution time from the final middleware list, so it holds no matter the order middlewares were added in.
 
@@ -630,7 +638,7 @@ Why these defaults fit a browser app:
 | `create(o?)` | Create a client (`Options & Pipe`) from initial options |
 | `toFetchParams(o)` | Convert a `Fetchable` to `[url, RequestInit]` (performs the baseUrl join); keys that are neither fetch-fun options nor `RequestInit` fields pass through to fetch silently — in development each one logs a `console.warn` naming it (silent in production) |
 | `applyMiddlewares(f, o)` | Sort and apply a configuration's middlewares to a fetch function |
-| `sortMiddlewares(entries)` | Topological sort of middleware entries (outer → inner); throws on duplicates/cycles |
+| `sortMiddlewares(entries)` | Topological sort of middleware entries (outer → inner); throws on duplicate names (also rejected eagerly by `use` / `middlewares`) and on cycles |
 | `normalizeMiddleware(input)` | Normalize a function or config object into a `MiddlewareEntry` |
 | `createRetry(maxRetries, opts?)` | Build the smart retry middleware as a bare `MiddlewareFn` |
 | `createRetryBase(beforeRetry)` | Build a retry middleware from a fully custom `(attempt, error, o) => Promise<void>` callback (reject to stop) |

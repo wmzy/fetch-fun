@@ -466,6 +466,29 @@ export function normalizeMiddleware(input: MiddlewareInput): MiddlewareEntry {
 }
 
 /**
+ * Throws if two entries share a name. Duplicate names would silently
+ * overwrite each other in the positioning graph and make `outer`/`inner`
+ * constraints ambiguous. Called eagerly by `use` / `middlewares` at
+ * composition time, and again by {@link sortMiddlewares} as the backstop
+ * for hand-built options that never passed through a pipe.
+ */
+export function assertUniqueMiddlewareNames(
+  entries: readonly MiddlewareEntry[]
+): void {
+  const seen = new Set<MiddlewareName>();
+  for (const entry of entries) {
+    if (seen.has(entry.name)) {
+      throw new Error(
+        `Duplicate middleware name "${String(entry.name)}". ` +
+          'Middleware names must be unique; use pipe(retry, n) / pipe(use, <middleware fn>) ' +
+          '(which generate unique anonymous names) or provide a custom unique name.'
+      );
+    }
+    seen.add(entry.name);
+  }
+}
+
+/**
  * Sorts middlewares based on their positioning constraints.
  *
  * In the onion model:
@@ -492,18 +515,12 @@ export function normalizeMiddleware(input: MiddlewareInput): MiddlewareEntry {
 export function sortMiddlewares(entries: MiddlewareEntry[]): MiddlewareEntry[] {
   if (entries.length <= 1) return entries;
 
-  // Build a map of name -> entry for quick lookup, rejecting duplicate names:
-  // duplicates would silently overwrite each other and make positioning
-  // constraints ambiguous.
+  // Build a map of name -> entry for quick lookup. Duplicate names were
+  // rejected by assertUniqueMiddlewareNames above: they would silently
+  // overwrite each other here and make positioning constraints ambiguous.
+  assertUniqueMiddlewareNames(entries);
   const nameToEntry = new Map<MiddlewareName, MiddlewareEntry>();
   for (const entry of entries) {
-    if (nameToEntry.has(entry.name)) {
-      throw new Error(
-        `Duplicate middleware name "${String(entry.name)}". ` +
-          'Middleware names must be unique; use pipe(retry, n) / pipe(use, <middleware fn>) ' +
-          '(which generate unique anonymous names) or provide a custom unique name.'
-      );
-    }
     nameToEntry.set(entry.name, entry);
   }
 

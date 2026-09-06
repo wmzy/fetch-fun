@@ -19,7 +19,11 @@ import type {
   TypedURLSearchParams,
 } from './types';
 
-import { createRetry, normalizeMiddleware } from './middleware';
+import {
+  assertUniqueMiddlewareNames,
+  createRetry,
+  normalizeMiddleware,
+} from './middleware';
 import { mapErrorSymbol, readDataSymbol, validateSymbol } from './constants';
 import { getData, hasData, setData } from './util';
 import { ValidationError } from './errors';
@@ -901,6 +905,7 @@ export function jsonBody<T extends Options>(o: T, data: unknown) {
 
 /**
  * Sets the middleware array, replacing any existing middlewares.
+ * Duplicate names within the list throw immediately, at composition time.
  *
  * @param o - The options object to modify
  * @param newMiddlewares - Array of middleware inputs (functions or configs)
@@ -920,9 +925,11 @@ export function middlewares<
 ): Omit<T, 'middlewares'> & {
   middlewares: MapMiddlewares<M>;
 } {
+  const entries = newMiddlewares.map(normalizeMiddleware);
+  assertUniqueMiddlewareNames(entries);
   return {
     ...o,
-    middlewares: newMiddlewares.map(normalizeMiddleware),
+    middlewares: entries,
   } as any;
 }
 
@@ -938,6 +945,11 @@ type InferMiddlewares<T> = T extends { middlewares: infer M extends unknown[] }
  *
  * Accepts either a simple middleware function or a configuration object
  * with positioning information for the onion model.
+ *
+ * Chains are append-only: the new layer is added after the existing ones,
+ * never replacing them. A middleware whose explicit name is already on
+ * the chain throws here, at composition time — anonymous functions always
+ * get a fresh name, so piping several of a kind requires bare functions.
  *
  * @param o - The options object to modify
  * @param middleware - The middleware function or configuration object
@@ -972,9 +984,12 @@ export function use<T extends Options, const M extends MiddlewareInput>(
 ): Omit<T, 'middlewares'> & {
   middlewares: [...InferMiddlewares<T>, MW<InferMiddlewareName<M>>];
 } {
+  const entry = normalizeMiddleware(middleware);
+  const entries = [...(o.middlewares || []), entry];
+  assertUniqueMiddlewareNames(entries);
   return {
     ...o,
-    middlewares: [...(o.middlewares || []), normalizeMiddleware(middleware)],
+    middlewares: entries,
   } as any;
 }
 
