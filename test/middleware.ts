@@ -354,7 +354,9 @@ describe('Middleware Tests', () => {
     const elapsed = Date.now() - start;
 
     expect(mockFetch).toHaveBeenCalledTimes(2);
-    expect(elapsed).toBeGreaterThanOrEqual(30); // backoff (~40ms) was used
+    // backoff (~40ms) was used; jitter floor is 30ms (40 × 0.75), and 25
+    // leaves headroom for sub-ms timer early-fire + Date.now truncation.
+    expect(elapsed).toBeGreaterThanOrEqual(25);
   });
 
   it('should use backoff when respectRetryAfter is false', async () => {
@@ -378,7 +380,9 @@ describe('Middleware Tests', () => {
     const elapsed = Date.now() - start;
 
     expect(mockFetch).toHaveBeenCalledTimes(2);
-    expect(elapsed).toBeGreaterThanOrEqual(30); // header ignored → ~40ms backoff
+    // header ignored → ~40ms backoff; jitter floor is 30ms (40 × 0.75),
+    // and 25 leaves headroom for sub-ms timer early-fire + Date.now truncation.
+    expect(elapsed).toBeGreaterThanOrEqual(25);
   });
 
   it('should cancel the discarded response body before retrying', async () => {
