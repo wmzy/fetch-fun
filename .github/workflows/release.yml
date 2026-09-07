@@ -3,10 +3,6 @@ name: Release
 on:
   push:
     branches: [main]
-    paths:
-      - "src/**"
-      - "package.json"
-      - ".github/workflows/release.yml"
   workflow_dispatch:
 
 permissions:
@@ -16,7 +12,43 @@ permissions:
   id-token: write
 
 jobs:
+  gate:
+    runs-on: ubuntu-latest
+    outputs:
+      releasable: ${{ steps.check.outputs.releasable }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # A push-level `paths` filter would only inspect the triggering
+      # push's files: a release whose test step failed would strand
+      # releasable changes with no retry (a test-only follow-up push does
+      # not re-trigger). Gate on the last-release-tag → HEAD diff instead:
+      # releasable paths changed since the last release, run; otherwise
+      # skip cheaply. semantic-release still has the final word — it
+      # publishes only when conventional commits exist since the last tag.
+      - name: Releasable changes since last release?
+        id: check
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "releasable=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Latest reachable tag, or the empty-tree hash when none exists
+          # (everything is releasable before the first release).
+          BASE="$(git describe --tags --abbrev=0 2>/dev/null || echo 4b825dc642cb6eb9a060e54bf8d69288fbee4904)"
+          if git diff --name-only "$BASE..HEAD" | grep -Eq '^(src/|package\.json|\.github/workflows/release\.yml)'; then
+            echo "releasable=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No releasable changes since $BASE — skipping release."
+            echo "releasable=false" >> "$GITHUB_OUTPUT"
+          fi
+
   release:
+    needs: gate
+    if: needs.gate.outputs.releasable == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
