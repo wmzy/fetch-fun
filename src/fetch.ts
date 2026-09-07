@@ -66,7 +66,7 @@ function joinUrl(baseUrl: string | undefined, url: string): string {
  * handed to fetch as `RequestInit`.
  */
 const LIBRARY_OPTION_KEYS =
-  'baseUrl,url,searchParams,fetch,middlewares,pipe,add,with,timeoutMs,totalTimeoutMs'.split(
+  'baseUrl,url,searchParams,fetch,middlewares,pipe,add,with,timeoutMs,totalTimeoutMs,context'.split(
     ','
   );
 
@@ -132,6 +132,7 @@ export function toFetchParams(o: Fetchable): [string, RequestInit] {
     with: w,
     timeoutMs,
     totalTimeoutMs,
+    context,
     ...rest
   } = o as Fetchable & Pipe;
 
@@ -411,10 +412,11 @@ export async function fetchData<T = never, O extends Fetchable = Fetchable>(
     if (!mapper) throw e;
     // Only HTTPError can contribute response/request context; every other
     // error type (network, timeout, validation, user middleware) gets {}.
+    // The client's business-data slot is request-level and present for all.
     const ctx: MapErrorContext =
       e instanceof HTTPError
-        ? { response: e.response, request: e.request }
-        : {};
+        ? { response: e.response, request: e.request, context: o.context }
+        : { context: o.context };
     let mapped: unknown;
     try {
       mapped = await mapper(e, ctx);

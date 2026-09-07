@@ -251,6 +251,21 @@ export type Options<Q extends QueryType = QueryType> = Omit<
   fetch?: typeof fetch;
   /** Array of middleware entries with positioning information */
   middlewares?: MiddlewareEntry[];
+  /**
+   * Opaque per-request business data carried on the client and visible to
+   * every post-request stage: middleware factories, `mapResponse` mappers,
+   * a `validate` schema factory, and the `mapError` mapper (via
+   * `ctx.context`).
+   *
+   * It is a fetch-fun option, not a `RequestInit` field: `toFetchParams`
+   * strips it before calling fetch, so it never reaches fetch and never
+   * triggers the dev-mode unknown-option warning. The narrow type you
+   * attach flows through the pipe chain (`{ ...o, context: {...} }`), so
+   * consumers that see the client's own type — pipe actions, a `validate`
+   * factory — read it fully typed; middleware and mappers receive the
+   * merged `Fetchable` and may cast it once to their context shape.
+   */
+  context?: unknown;
   /** AbortSignal for request cancellation */
   signal?: AbortSignal;
   /**
@@ -349,8 +364,15 @@ export type Fetchable<Q extends QueryType = QueryType> = {
  * Context handed to a `mapError` mapper: the failed `response` and the
  * originating `request` when the error is an `HTTPError`, and empty
  * otherwise (e.g. `NetworkError`, `TimeoutError`, `ValidationError`).
+ *
+ * `context` always carries the client's {@link Options.context} business
+ * data slot for the request that failed, regardless of error type.
  */
-export type MapErrorContext = { response?: Response; request?: Request };
+export type MapErrorContext = {
+  response?: Response;
+  request?: Request;
+  context?: unknown;
+};
 
 /**
  * Result returned by a Standard Schema v1 `validate` function.

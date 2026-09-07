@@ -178,7 +178,7 @@ Every config function has the shape `(o, ...args) => o'` — it takes the curren
 | `arrayBuffer(o)` | Reader: read the body as an `ArrayBuffer` | — |
 | `formData(o)` | Reader: read the body as a `FormData` | — |
 | `events(o, onEvent?)` | Reader: parse the body as a Server-Sent Events stream — each frame is passed to `onEvent` the moment its terminating blank line arrives, and `fetchData` resolves to the complete `SSEEvent[]` once the stream ends. Full wire-format framing: leading BOM, `\r\n`/`\r`/`\n` line endings, `:` comments, multi-line `data:` (joined with `\n`), `id:`, numeric `retry:`, and a trailing frame missing its blank line. Non-2xx responses still throw `HTTPError`; reconnection policy stays with you (see [docs/recipes.md](docs/recipes.md) for the Last-Event-ID loop) | `onEvent?: (e: SSEEvent) => void` — annotate the parameter (`(e: SSEEvent) => …`), as with `json`'s parser, so the generic pipe overload applies |
-| `validate(o, schema)` | Attach a Standard Schema v1 schema; parsed data is validated and replaced by its output | `schema: StandardSchema` |
+| `validate(o, schema \| factory)` | Attach a Standard Schema v1 schema — or a `(client) => schema` factory resolved per request with the merged client; parsed data is validated and replaced by its output | `schema: StandardSchema \| (client: T) => StandardSchema` |
 | `use(o, mw)` | Add one middleware (function or `{ name, outer, inner, middleware }` config) | `mw: MiddlewareInput` |
 | `middlewares(o, list)` | **Replace** the middleware list | `list: MiddlewareInput[]` |
 
@@ -368,6 +368,27 @@ const user = await client
 
 On success a transformed/defaulted schema output replaces the stored data; on failure `fetchData`/`fetchJSON` reject with a `ValidationError`. Passing anything that is not a Standard Schema v1 object throws a `TypeError` immediately.
 
+**Schema factories for client-dependent schemas.** When the schema depends on client state — an API version, a tenant, anything carried on the client — pass `(client) => schema` instead of a fixed object. The factory runs once per request at validation time with the *fully merged* client, so it sees options attached anywhere in the chain, including after `validate`:
+
+```typescript
+const schemaFor = (v: 'v1' | 'v2') =>
+  v === 'v2'
+    ? z.object({ id: z.number(), nickname: z.string() })
+    : z.object({ id: z.number() });
+
+const api = ff
+  .create({ baseUrl: 'https://api.example.com', context: { apiVersion: 'v2' } as const })
+  .pipe(ff.json)
+  .pipe(ff.validate, (c) => schemaFor(c.context.apiVersion)) // `c.context` is typed
+  .pipe(ff.url, '/users/1');
+
+await api.pipe(ff.fetchData); // Promise<{ id: number; nickname: string }>
+```
+
+A factory returning a non-schema throws a `TypeError` when it runs — at fetch time, since its result only exists then.
+
+**Business data via `context`.** The client doubles as a plain options object; `context` is its sanctioned slot for per-request business data (tenant ids, trace ids, feature flags). It is a fetch-fun option, not a `RequestInit` field: `toFetchParams` strips it before calling fetch — it never reaches fetch and never trips the dev-mode unknown-option warning. After the request it stays readable in middleware factories, `mapResponse` mappers, a `validate` factory, and `mapError` mappers (`ctx.context`).
+
 ## Executors: fetch / fetchData / fetchJSON
 
 | | `fetch(o)` | `fetchData<T>(o)` | `fetchJSON<T>(o)` |
@@ -454,7 +475,7 @@ const user = await client
   .pipe(ff.fetchJSON);
 ```
 
-The mapper has the shape `(e: unknown, ctx: MapErrorContext) => unknown`, where `MapErrorContext` (`{ response?: Response; request?: Request }`) is populated only when the error is an `HTTPError` — the failed `response` plus the best-effort reconstructed `request`; every other error type (network, timeout, validation, user middleware) gets `{}`.
+The mapper has the shape `(e: unknown, ctx: MapErrorContext) => unknown`, where `MapErrorContext` (`{ response?: Response; request?: Request; context?: unknown }`) carries the failed `response` plus the best-effort reconstructed `request` only when the error is an `HTTPError`; `ctx.context` mirrors the client's business-data slot for **every** error type.
 
 The most common mapping — rewrite the message from the parsed error body — is one line with `HTTPError.withMessage`: the clone is created with the original as its prototype — it inherits every field (`response`, `request`, `data`, `cause`, and anything a subclass or middleware attached after construction) and keeps the `HTTPError` identity, so downstream `instanceof` checks, `.status`, and `.data` all keep working (a global 401 → logout handler can still branch on `e.status`); the clone shares the original's `stack` rather than capturing a fresh one:
 

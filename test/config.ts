@@ -118,6 +118,20 @@ describe('config-build', function () {
         searchParams: new URLSearchParams('page=2'),
       })[0].should.be.eql('https://x.com/users?page=2');
     });
+
+    it('should strip context from the fetch init without a dev warning', function () {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      try {
+        const [, init] = toFetchParams({
+          url: '/users',
+          context: { tenantId: 't1' },
+        });
+        expect('context' in init).toBe(false);
+        expect(warn).not.toHaveBeenCalled();
+      } finally {
+        warn.mockRestore();
+      }
+    });
   });
 
   it('method', function () {
@@ -1087,6 +1101,16 @@ describe('config-build', function () {
       ).toThrow(TypeError);
     });
 
+    it('should attach a factory and defer the schema check to fetch time', function () {
+      const factory = () => schema;
+      const result = validate({ url: 'https://x.y' }, factory);
+      result.url.should.be.eql('https://x.y');
+      (result as any)[validateSymbol].should.be.equal(factory);
+      // A factory's result is only inspectable once it runs, so a
+      // non-schema-producing factory cannot throw at pipe time.
+      expect(() => validate({}, () => ({}) as any)).not.toThrow();
+    });
+
     it('should converge fetchData to the schema output type', () => {
       type User = { id: number; name: string };
       const userSchema: StandardSchema<User> = {
@@ -1113,6 +1137,29 @@ describe('config-build', function () {
       expectTypeOf(viaOverride).returns.resolves.toEqualTypeOf<{
         override: true;
       }>();
+    });
+
+    it('should converge fetchData to the factory schema output type', () => {
+      type User = { id: number; name: string };
+      const userSchema: StandardSchema<User> = {
+        '~standard': {
+          version: 1,
+          vendor: 'test',
+          validate: (value: unknown) => ({ value: value as User }),
+        },
+      };
+      const viaFactory = () =>
+        create({ context: { apiVersion: 'v2' } })
+          .pipe(url, '/u')
+          .pipe(json)
+          .pipe(validate, (c) => {
+            // The client is contextually typed: business keys attached to
+            // the client are visible without casts.
+            expectTypeOf(c.context).toEqualTypeOf<{ apiVersion: string }>();
+            return userSchema;
+          })
+          .pipe(fetchData);
+      expectTypeOf(viaFactory).returns.resolves.toEqualTypeOf<User>();
     });
   });
 

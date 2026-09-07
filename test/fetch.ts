@@ -159,6 +159,46 @@ describe('Fetch Tests', () => {
     );
   });
 
+  it('should carry client context into the mapError mapper for every error type', async () => {
+    const ctxPayload = { tenantId: 't1' };
+
+    // HTTPError path: response/request present, context alongside.
+    const httpFetch = vi
+      .fn()
+      .mockResolvedValue(new Response('Not Found', { status: 404 }));
+    const httpSeen: ff.MapErrorContext[] = [];
+    const httpInstance = ff
+      .create({ url: '/test', fetch: httpFetch, context: ctxPayload })
+      .pipe(
+        ff.mapError,
+        (e: unknown, ctx: ff.MapErrorContext) => {
+          httpSeen.push(ctx);
+          return new Error('mapped');
+        }
+      );
+    await expect(ff.fetchData(httpInstance)).rejects.toThrow('mapped');
+    expect(httpSeen).toHaveLength(1);
+    expect(httpSeen[0].response).toBeInstanceOf(Response);
+    expect(httpSeen[0].context).toBe(ctxPayload);
+
+    // NetworkError path: no response, but context still present.
+    const netFetch = vi.fn().mockRejectedValue(new TypeError('fetch failed'));
+    const netSeen: ff.MapErrorContext[] = [];
+    const netInstance = ff
+      .create({ url: '/test', fetch: netFetch, context: ctxPayload })
+      .pipe(
+        ff.mapError,
+        (e: unknown, ctx: ff.MapErrorContext) => {
+          netSeen.push(ctx);
+          return new Error('mapped');
+        }
+      );
+    await expect(ff.fetchData(netInstance)).rejects.toThrow('mapped');
+    expect(netSeen).toHaveLength(1);
+    expect(netSeen[0].response).toBeUndefined();
+    expect(netSeen[0].context).toBe(ctxPayload);
+  });
+
   it('should throw HTTPError unchanged when no mapError is configured', async () => {
     const mockFetch = vi
       .fn()

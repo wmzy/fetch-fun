@@ -236,6 +236,8 @@ import { fetch } from 'fetch-fun/dist/index.mjs'; // deep import, new path
 - Method sugar: `get` / `post` / `put` / `patch` / `del` / `head` — `client.pipe(ff.post, '/users', { name: 'Alice' })` sets method, URL, and JSON body in one step. Each argument is optional: an omitted path keeps the existing `url`, an omitted body leaves `body` untouched. (`del`, because `delete` is a reserved word.)
 - `withProgress({ onDownloadProgress, onUploadProgress })` — per-chunk `{ percent, transferred, total }` callbacks. `total` comes from `Content-Length` (`0` / `percent: 0` when absent); null-body responses (`204` / `205` / `HEAD`) are not wrapped; uploads are counted only when `init.body` is a `ReadableStream`.
 - `validate(o, schema)` — Standard Schema v1 validation (Zod / Valibot / ArkType, duck-typed) of parsed response data; failures reject `fetchData` / `fetchJSON` with `ValidationError` (`issues`, `data`), and the inferred data type converges to the schema output.
+- `validate(o, factory)` — pass `(client) => schema` instead of a schema object: the factory runs once per request at validation time with the fully merged client (options attached *after* `validate` in the chain included), so schemas can derive from client state — `context`, an API version option, live per-request data. A factory returning a non-schema throws `TypeError` when it runs (fetch time), not at pipe time.
+- `context` — an opaque business-data slot on the options object. It is a fetch-fun option, not a `RequestInit` field: `toFetchParams` strips it before fetch, so it never reaches fetch and never trips the dev-mode unknown-option warning. It is readable post-request in middleware factories, `mapResponse` mappers, a `validate` factory (typed, when attached via `create({ context: {...} })`), and `mapError` mappers via `ctx.context`.
 - Error classes exported from the root: `HTTPError`, `TimeoutError`, `ValidationError`, `NetworkError` (see [Errors](README.md#errors)).
 - `RetryOptions.shouldRetry` and `RetryOptions.maxRetryAfter` (see Breaking changes #3).
 - Query values widen to `string | number | boolean` in `query` / `mergeQuery` / `querySet` / `queryAppend` — stringified with `String()` at runtime (`true` → `'true'`), tracked as string literals at the type level (`querySet(o, 'page', 1)` tracks `'1'`).
@@ -243,7 +245,7 @@ import { fetch } from 'fetch-fun/dist/index.mjs'; // deep import, new path
 - Response readers: `arrayBuffer(o)` and `formData(o)` join `json` / `text` / `blob`; `json(o, parseJson?)` accepts a custom parser (e.g. a `JSON.parse` reviver reviving `Date`s) whose return type flows into `fetchData` inference.
 - `withAuth(credentials, type = 'Bearer')` — the middleware now supports any auth scheme (`'Basic' | 'Bearer' | 'Digest' | string`), matching the `auth(o, type, credentials)` config function; single-argument calls stay Bearer.
 - Bundle guardrails in CI: `size-limit` (full client ≈ 5 kB min+gzip; a `create` + `url` + `fetchJSON` + `json` app ≈ 2 kB) and a tree-shaking verification script asserting `withRetry` / `withAuth` / `withLogging` / `withProgress` code is dropped when unused (`npm run size`, `npm run verify:tree-shaking`).
-- `mapError(o, mapper)` — map any rejection right before it escapes `fetchData` / `fetchJSON` (ky's `beforeError` hook): the mapper receives `(error, ctx)` where `ctx` carries `{ response, request }` for `HTTPError`s and `{}` otherwise, and its — possibly async — return value becomes the rejection reason. A later pipe overwrites an earlier mapper, `retry` always sees the original error, and raw `fetch()` bypasses it entirely.
+- `mapError(o, mapper)` — map any rejection right before it escapes `fetchData` / `fetchJSON` (ky's `beforeError` hook): the mapper receives `(error, ctx)` where `ctx` carries `{ response, request }` for `HTTPError`s and the client's `context` business-data slot for every error type, and its — possibly async — return value becomes the rejection reason. A later pipe overwrites an earlier mapper, `retry` always sees the original error, and raw `fetch()` bypasses it entirely.
 - `withProgress({ wrapBody: true })` — wrap string / `Blob` / `ArrayBuffer` / `ArrayBufferView` / `URLSearchParams` request bodies into a counting stream so `onUploadProgress` fires for them too, with `total` set to the body's real byte size (making `percent` meaningful); the implicit `Content-Type` those shapes lose when streamed is restored, and `duplex: 'half'` is set automatically. `FormData` and `ReadableStream` bodies are unaffected.
 
 ### Migrate
@@ -291,6 +293,7 @@ fetch-fun is not a drop-in ky replacement: where ky configures an instance with 
 | `onDownloadProgress` | `withProgress({ onDownloadProgress })` | Same per-chunk `{ percent, transferred, total }` shape (ky spells the fields `transferredBytes` / `totalBytes`). |
 | `onUploadProgress` | `withProgress({ onUploadProgress, wrapBody: true })` | fetch-fun counts `ReadableStream` bodies natively (`total: 0` — unknown length) and wraps string / `Blob` / `ArrayBuffer` / view / `URLSearchParams` bodies when `wrapBody: true`, giving a real byte `total`, restoring the implicit `Content-Type`, and setting `duplex: 'half'` automatically. |
 | `fetch` option | `create({ fetch: myFetch })` | Custom fetch implementation (SSR wrappers, instrumentation, test doubles). |
+| custom options (ky `Options` augmentation) | `context` | Both let business data ride on the options object; fetch-fun names the slot so `toFetchParams` strips it from `RequestInit` and the dev-mode unknown-option warning leaves it alone. ky hooks read it off `options`; fetch-fun middleware factories, `mapResponse` mappers, `validate` factories, and `mapError` mappers (`ctx.context`) do. |
 | `HTTPError` / `TimeoutError` / `NetworkError` | same names | Field-level differences: fetch-fun's `HTTPError` carries `.response` / `.request` / `.data`; `SchemaValidationError` maps to `ValidationError`. |
 | Node.js 22+ | Node.js >= 20.3 | fetch-fun only needs `AbortSignal.any` and `AbortSignal.timeout`. |
 
@@ -450,7 +453,7 @@ client.pipe(ff.mapError, (e, ctx) =>
 );
 ```
 
-`mapError` context carries `{ response, request }` only when the error is an `HTTPError` (`{}` otherwise); the mapper may be async, a later pipe overwrites an earlier one, and `retry` always sees the original error — only `fetchData` / `fetchJSON` rejections pass through it.
+`mapError` context carries `{ response, request }` only when the error is an `HTTPError`, plus the client's `context` business-data slot for every error type; the mapper may be async, a later pipe overwrites an earlier one, and `retry` always sees the original error — only `fetchData` / `fetchJSON` rejections pass through it.
 
 ### Status handling and typed errors
 

@@ -839,6 +839,96 @@ describe('Error Handling Integration Tests', () => {
       expect(seen).toEqual([{ n: 7 }, { n: 7 }]);
     });
 
+    it('should resolve the schema factory per request with the merged client', async () => {
+      // A fresh Response per call: the data middleware caches parsed data
+      // per Response instance, so reusing one instance would skip
+      // validation (and the factory) on the second request.
+      const mockFetch = vi.fn().mockImplementation(() =>
+        Promise.resolve(new Response(JSON.stringify({ n: 7 }), { status: 200 }))
+      );
+
+      const seenVersions: unknown[] = [];
+      const schema: StandardSchema = {
+        '~standard': {
+          version: 1,
+          validate: (value: unknown) => ({ value: (value as { n: number }).n * 2 }),
+        },
+      };
+
+      const client = create({ fetch: mockFetch, context: { apiVersion: 'v2' } })
+        .pipe(json)
+        .pipe(validate, (c) => {
+          // context is a declared option: the narrow type attached via
+          // create() is visible here without a cast.
+          seenVersions.push(c.context?.apiVersion);
+          return schema;
+        })
+        .pipe(url, 'https://example.com/a');
+
+      expect(await client.pipe(fetchData)).toBe(14);
+      expect(await client.pipe(fetchData)).toBe(14);
+      expect(seenVersions).toEqual(['v2', 'v2']);
+    });
+
+    it('should let the factory see options attached after validate in the chain', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ n: 7 }), { status: 200 })
+      );
+
+      const seenVersions: unknown[] = [];
+      const schema: StandardSchema = {
+        '~standard': {
+          version: 1,
+          validate: (value: unknown) => ({ value: (value as { n: number }).n * 2 }),
+        },
+      };
+
+      const client = create({ fetch: mockFetch })
+        .pipe(json)
+        .pipe(validate, (c) => {
+          seenVersions.push((c.context as { apiVersion: string })?.apiVersion);
+          return schema;
+        })
+        .pipe((o) => ({ ...o, context: { apiVersion: 'v3' } }))
+        .pipe(url, 'https://example.com/b');
+
+      expect(await client.pipe(fetchData)).toBe(14);
+      expect(seenVersions).toEqual(['v3']);
+    });
+
+    it('should reject fetchData with TypeError when the factory returns a non-schema', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ n: 7 }), { status: 200 })
+      );
+
+      const client = create({ fetch: mockFetch })
+        .pipe(json)
+        .pipe(validate, () => ({ nope: true }) as unknown as StandardSchema)
+        .pipe(url, 'https://example.com/c');
+
+      await expect(client.pipe(fetchData)).rejects.toThrow(/Standard Schema v1/);
+    });
+
+    it('should reject with ValidationError from a factory-resolved schema', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ n: 'bad' }), { status: 200 })
+      );
+
+      const schema: StandardSchema = {
+        '~standard': {
+          version: 1,
+          validate: () => ({ issues: [{ message: 'n must be a number' }] }),
+        },
+      };
+
+      const client = create({ fetch: mockFetch })
+        .pipe(json)
+        .pipe(validate, () => schema)
+        .pipe(url, 'https://example.com/d');
+
+      await expect(client.pipe(fetchData)).rejects.toThrow(ValidationError);
+    });
+
     it('should reject fetchData with ValidationError when issues are present', async () => {
       const mockFetch = vi.fn().mockResolvedValue(
         new Response(JSON.stringify({ id: 'nope' }), { status: 200 })

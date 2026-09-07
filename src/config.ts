@@ -1412,18 +1412,39 @@ export function validate<T extends Options, S extends StandardSchema>(
   schema: S
 ): Omit<T, typeof readDataSymbol> & {
   [readDataSymbol]: (res: Response) => Promise<SchemaOutput<S>>;
-} {
-  if (!isStandardSchema(schema)) {
+};
+/**
+ * Accepts a schema factory instead of a schema object. The factory is
+ * called once per request at validation time with the fully merged
+ * client, so it sees options attached anywhere in the chain — including
+ * after `validate` — and can derive the schema from live client state
+ * (`context`, an API version, ...). A factory returning a non-schema
+ * throws a `TypeError` at fetch time, when the result first exists.
+ */
+export function validate<
+  T extends Options,
+  F extends (client: T) => StandardSchema
+>(
+  o: T,
+  factory: F
+): Omit<T, typeof readDataSymbol> & {
+  [readDataSymbol]: (res: Response) => Promise<SchemaOutput<ReturnType<F>>>;
+};
+export function validate<
+  T extends Options,
+  S extends StandardSchema,
+  F extends (client: T) => StandardSchema
+>(
+  o: T,
+  schemaOrFactory: S | F
+): any {
+  const spec = schemaOrFactory;
+  if (typeof spec !== 'function' && !isStandardSchema(spec)) {
     throw new TypeError(
       "validate() expects a Standard Schema v1 object: one with a '~standard' property of the form { version: 1, validate(value) }, as provided by Zod, Valibot, ArkType, etc."
     );
   }
-  return { ...o, [validateSymbol]: schema } as unknown as Omit<
-    T,
-    typeof readDataSymbol
-  > & {
-    [readDataSymbol]: (res: Response) => Promise<SchemaOutput<S>>;
-  };
+  return { ...o, [validateSymbol]: spec };
 }
 
 /**
@@ -1438,10 +1459,21 @@ async function validateData(
   finalOptions: Fetchable
 ): Promise<void> {
   if (!res.ok) return;
-  const schema = (finalOptions as any)[validateSymbol] as
+  const spec = (finalOptions as any)[validateSymbol] as
     | StandardSchema
+    | ((client: Fetchable) => StandardSchema)
     | undefined;
-  if (!schema) return;
+  if (!spec) return;
+
+  // A factory attached via `validate(o, (client) => schema)` is resolved
+  // here, once per request, with the fully merged client — so it sees
+  // options attached after `validate` in the chain.
+  const schema = typeof spec === 'function' ? spec(finalOptions) : spec;
+  if (!isStandardSchema(schema)) {
+    throw new TypeError(
+      "validate() expects a Standard Schema v1 object: one with a '~standard' property of the form { version: 1, validate(value) }, as provided by Zod, Valibot, ArkType, etc."
+    );
+  }
 
   const data = getData(res);
   const result = await schema['~standard'].validate(data);

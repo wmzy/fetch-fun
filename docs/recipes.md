@@ -374,6 +374,65 @@ try {
 }
 ```
 
+### Dynamic schemas: `validate(o, factory)` + business data via `context`
+
+A fixed schema object covers most endpoints. When the schema depends on the client — an API version, a tenant's shape contract, a negotiated capability — pass a factory instead: `(client) => schema`. It runs once per request at validation time with the fully merged client, so it sees every option on the chain, even ones attached *after* `validate`, and can re-derive per request:
+
+```typescript
+import { z } from 'zod';
+
+const schemas = {
+  v1: z.object({ id: z.number() }),
+  v2: z.object({ id: z.number(), nickname: z.string() }),
+} as const;
+
+const api = ff
+  .create({
+    baseUrl: 'https://api.example.com',
+    context: { apiVersion: 'v2' } as const, // business data lives here
+  })
+  .pipe(ff.json)
+  .pipe(ff.validate, (c) => schemas[c.context.apiVersion]); // typed: 'v2'
+
+await api.pipe(ff.get, '/users/42').pipe(ff.fetchJSON); // { id, nickname }
+```
+
+`context` is the sanctioned slot for per-request business data (tenant id, trace id, feature flags). It is a fetch-fun option, not a `RequestInit` field: stripped before fetch, so it never hits the wire and never trips the dev-mode unknown-option warning. After the request it stays readable everywhere the merged options are — middleware factories, `mapResponse` mappers, the `validate` factory above, and `mapError` mappers via `ctx.context`:
+
+```typescript
+const api = ff
+  .create({ baseUrl: 'https://api.example.com', context: { tenantId: 't-42' } })
+  .pipe(ff.json)
+  .pipe(ff.mapError, (e, ctx) =>
+    e instanceof ff.HTTPError
+      ? new TenantError(
+          String((ctx.context as { tenantId: string }).tenantId),
+          e.status
+        ) // context survives into error mapping
+      : e
+  );
+```
+
+Multi-tenant clients derive cheaply: one base with the factory, then per-tenant children that set `context` (the factory resolves against the child's merged client at fetch time):
+
+```typescript
+const base = ff
+  .create({ baseUrl: 'https://api.example.com' })
+  .pipe(ff.json)
+  .pipe(ff.validate, (c) => schemas[(c.context as { apiVersion: 'v1' | 'v2' }).apiVersion]);
+
+const legacy = base.pipe((o) => ({ ...o, context: { apiVersion: 'v1' } as const }));
+const current = base.pipe((o) => ({ ...o, context: { apiVersion: 'v2' } as const }));
+
+// Both resolve their own schema — the factory runs per request, post-merge.
+const [oldUser, newUser] = await Promise.all([
+  legacy.pipe(ff.get, '/users/1').pipe(ff.fetchJSON),
+  current.pipe(ff.get, '/users/2').pipe(ff.fetchJSON),
+]);
+```
+
+A factory that returns a non-schema throws `TypeError` when it runs (fetch time) — the result can't be inspected at pipe time.
+
 ## Streaming responses & Server-Sent Events
 
 SSE used to be the case that pushed you off the data-out executors: `fetchData`'s contract is *buffer, then resolve*, while a live stream wants frames as they arrive. The `events` reader closes that gap. It is the SSE counterpart of `json`/`text` — pipe it and the wire format is handled for you (BOM stripping, `\r\n`/`\r`/`\n` line endings, multi-line `data:` joining, comment keep-alives, `retry:` as a number, even a final frame that never received its closing blank line; the parser lives in `src/events.ts`). `onEvent` receives each frame the moment its blank line lands on the wire, while the promise keeps the buffer-then-resolve contract and settles — to every frame at once — when the stream ends.
