@@ -181,6 +181,7 @@ Every config function has the shape `(o, ...args) => o'` — it takes the curren
 | `validate(o, schema \| factory)` | Attach a Standard Schema v1 schema — or a `(client) => schema` factory resolved per request with the merged client; parsed data is validated and replaced by its output | `schema: StandardSchema \| (client: T) => StandardSchema` |
 | `use(o, mw)` | Add one middleware (function or `{ name, outer, inner, middleware }` config) | `mw: MiddlewareInput` |
 | `middlewares(o, list)` | **Replace** the middleware list | `list: MiddlewareInput[]` |
+| `context(o, ctx)` | Set the business-data slot carried on the client (replaces a previous one); stripped from `RequestInit`, readable in middleware / mappers / a `validate` factory / `mapError` (`ctx.context`) | `ctx: any` — the attached literal type flows through the chain |
 
 Notes:
 
@@ -387,7 +388,16 @@ await api.pipe(ff.fetchData); // Promise<{ id: number; nickname: string }>
 
 A factory returning a non-schema throws a `TypeError` when it runs — at fetch time, since its result only exists then.
 
-**Business data via `context`.** The client doubles as a plain options object; `context` is its sanctioned slot for per-request business data (tenant ids, trace ids, feature flags). It is a fetch-fun option, not a `RequestInit` field: `toFetchParams` strips it before calling fetch — it never reaches fetch and never trips the dev-mode unknown-option warning. After the request it stays readable in middleware factories, `mapResponse` mappers, a `validate` factory, and `mapError` mappers (`ctx.context`).
+**Business data via `context`.** The client doubles as a plain options object; `context` is its sanctioned slot for per-request business data (tenant ids, trace ids, feature flags). Attach it via `create({ context })` or the `context(o, ctx)` config function:
+
+```typescript
+const api = ff
+  .create({ baseUrl: 'https://api.example.com' })
+  .pipe(ff.context, { tenantId: 't-42' }) // replaces any previous context
+  .pipe(ff.json);
+```
+
+It is a fetch-fun option, not a `RequestInit` field: `toFetchParams` strips it before calling fetch — it never reaches fetch and never trips the dev-mode unknown-option warning. After the request it stays readable in middleware factories, `mapResponse` mappers, a `validate` factory, and `mapError` mappers (`ctx.context`).
 
 ## Executors: fetch / fetchData / fetchJSON
 

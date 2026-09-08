@@ -397,7 +397,7 @@ const api = ff
 await api.pipe(ff.get, '/users/42').pipe(ff.fetchJSON); // { id, nickname }
 ```
 
-`context` is the sanctioned slot for per-request business data (tenant id, trace id, feature flags). It is a fetch-fun option, not a `RequestInit` field: stripped before fetch, so it never hits the wire and never trips the dev-mode unknown-option warning. After the request it stays readable everywhere the merged options are — middleware factories, `mapResponse` mappers, the `validate` factory above, and `mapError` mappers via `ctx.context`:
+`context` is the sanctioned slot for per-request business data (tenant id, trace id, feature flags). Attach it via `create({ context })` or the `context(o, ctx)` config function (`pipe(ff.context, {...})` — replaces a previous context). It is a fetch-fun option, not a `RequestInit` field: stripped before fetch, so it never hits the wire and never trips the dev-mode unknown-option warning. After the request it stays readable everywhere the merged options are — middleware factories, `mapResponse` mappers, the `validate` factory above, and `mapError` mappers via `ctx.context`:
 
 ```typescript
 const api = ff
@@ -421,8 +421,8 @@ const base = ff
   .pipe(ff.json)
   .pipe(ff.validate, (c) => schemas[(c.context as { apiVersion: 'v1' | 'v2' }).apiVersion]);
 
-const legacy = base.pipe((o) => ({ ...o, context: { apiVersion: 'v1' } as const }));
-const current = base.pipe((o) => ({ ...o, context: { apiVersion: 'v2' } as const }));
+const legacy = base.pipe(ff.context, { apiVersion: 'v1' });
+const current = base.pipe(ff.context, { apiVersion: 'v2' });
 
 // Both resolve their own schema — the factory runs per request, post-merge.
 const [oldUser, newUser] = await Promise.all([

@@ -93,6 +93,46 @@ export function appendUrl<
 }
 
 /**
+ * Sets the business-data slot carried on the client. Replaces any
+ * previous `context` (pipe again to overwrite, like `query`/`headers`).
+ *
+ * `context` is a fetch-fun option, not a `RequestInit` field:
+ * `toFetchParams` strips it before fetch, so it never reaches fetch and
+ * never trips the dev-mode unknown-option warning. It stays readable
+ * post-request in middleware factories, `mapResponse` mappers, a
+ * `validate` factory, and `mapError` mappers (`ctx.context`).
+ *
+ * The attached type flows through the pipe chain, so consumers that see
+ * the client's own type — later pipe actions, a `validate` factory —
+ * read it without casts:
+ *
+ * ```ts
+ * const api = client
+ *   .pipe(context, { apiVersion: 'v2' }) // literal type tracked
+ *   .pipe(json)
+ *   .pipe(validate, (c) => schemas[c.context.apiVersion]);
+ * ```
+ *
+ * @param o - The options object to modify
+ * @param ctx - The business data to carry (replaces any previous context)
+ * @returns A new options object with the context set
+ *
+ * @example
+ * ```ts
+ * client.pipe(context, { tenantId: 't-42' });
+ * ```
+ */
+export function context<T extends Options, const C>(
+  o: T,
+  ctx: C
+): Omit<T, 'context'> & { context: C } {
+  return {
+    ...o,
+    context: ctx,
+  };
+}
+
+/**
  * Fills every `{name}` placeholder in a path template with the matching
  * param value, `encodeURIComponent`-ed so a value can never inject path
  * separators or query syntax.

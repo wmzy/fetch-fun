@@ -47,6 +47,7 @@ import {
   withRetry,
   withTimeout,
   validate,
+  context,
   create,
   fetchData,
   fetchJSON,
@@ -1160,6 +1161,27 @@ describe('config-build', function () {
           })
           .pipe(fetchData);
       expectTypeOf(viaFactory).returns.resolves.toEqualTypeOf<User>();
+    });
+  });
+
+  describe('context', function () {
+    it('should set the context on the options without mutating the input', function () {
+      const original = { url: 'https://x.y' };
+      const result = context(original, { tenantId: 't1' });
+      result.url.should.be.eql('https://x.y');
+      result.context.should.be.eql({ tenantId: 't1' });
+      expect('context' in original).toBe(false);
+    });
+
+    it('should replace a previous context (last pipe wins)', function () {
+      const first = context({}, { tenantId: 't1' });
+      const second = context(first, { apiVersion: 'v2' });
+      second.context.should.be.eql({ apiVersion: 'v2' });
+    });
+
+    it('should track the attached literal type through the chain', () => {
+      const result = context({}, { apiVersion: 'v2' });
+      expectTypeOf(result.context).toEqualTypeOf<{ apiVersion: 'v2' }>();
     });
   });
 

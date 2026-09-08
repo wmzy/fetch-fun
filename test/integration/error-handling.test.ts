@@ -12,6 +12,7 @@ import {
   json,
   text,
   validate,
+  context,
   checkError,
   mapResponse,
   mapError,
@@ -855,11 +856,12 @@ describe('Error Handling Integration Tests', () => {
         },
       };
 
-      const client = create({ fetch: mockFetch, context: { apiVersion: 'v2' } })
+      const client = create({ fetch: mockFetch })
+        .pipe(context, { apiVersion: 'v2' })
         .pipe(json)
         .pipe(validate, (c) => {
           // context is a declared option: the narrow type attached via
-          // create() is visible here without a cast.
+          // the context pipe is visible here without a cast.
           seenVersions.push(c.context?.apiVersion);
           return schema;
         })
@@ -889,7 +891,7 @@ describe('Error Handling Integration Tests', () => {
           seenVersions.push((c.context as { apiVersion: string })?.apiVersion);
           return schema;
         })
-        .pipe((o) => ({ ...o, context: { apiVersion: 'v3' } }))
+        .pipe(context, { apiVersion: 'v3' })
         .pipe(url, 'https://example.com/b');
 
       expect(await client.pipe(fetchData)).toBe(14);
