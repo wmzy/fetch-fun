@@ -1183,6 +1183,23 @@ describe('config-build', function () {
       const result = context({}, { apiVersion: 'v2' });
       expectTypeOf(result.context).toEqualTypeOf<{ apiVersion: 'v2' }>();
     });
+
+    it('should stay assignable to a generic wrapper return for the default unknown slot', () => {
+      // 泛型包装（返回 T）可无断言委托本 helper：默认 unknown 槽位下
+      // 返回型折叠为 T & { context: C }，可回赋 T（decision: 模板侧
+      // withSchema 包装）。
+      function attach<T extends Options>(o: T, ctx: string): T {
+        return context(o, ctx);
+      }
+      const result = attach({ url: 'https://x.y' }, 'tenant-1');
+      expectTypeOf(result.context).toEqualTypeOf<string>();
+    });
+
+    it('should replace a declared narrow context type (Omit form)', () => {
+      const base = { context: { tenantId: 't1' } as const };
+      const result = context(base, { apiVersion: 'v2' });
+      expectTypeOf(result.context).toEqualTypeOf<{ apiVersion: 'v2' }>();
+    });
   });
 
   describe('mapError', function () {

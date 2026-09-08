@@ -181,7 +181,7 @@ Every config function has the shape `(o, ...args) => o'` — it takes the curren
 | `validate(o, schema \| factory)` | Attach a Standard Schema v1 schema — or a `(client) => schema` factory resolved per request with the merged client; parsed data is validated and replaced by its output | `schema: StandardSchema \| (client: T) => StandardSchema \| undefined` |
 | `use(o, mw)` | Add one middleware (function or `{ name, outer, inner, middleware }` config) | `mw: MiddlewareInput` |
 | `middlewares(o, list)` | **Replace** the middleware list | `list: MiddlewareInput[]` |
-| `context(o, ctx)` | Set the business-data slot carried on the client (replaces a previous one); stripped from `RequestInit`, readable in middleware / mappers / a `validate` factory / `mapError` (`ctx.context`) | `ctx: any` — the attached literal type flows through the chain |
+| `context(o, ctx)` | Set the business-data slot carried on the client (replaces a previous one); stripped from `RequestInit`, readable in middleware / mappers / a `validate` factory / `mapError` (`ctx.context`) | `ctx: const C` — the literal type flows through: `T & { context: C }` on the default unknown slot (assignable back to `T`), `Omit` replacement when `T` declared a narrow context |
 
 Notes:
 

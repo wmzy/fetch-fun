@@ -117,6 +117,15 @@ export function appendUrl<
  * @param ctx - The business data to carry (replaces any previous context)
  * @returns A new options object with the context set
  *
+ * The return type is context-aware: when the client's own `context` is
+ * the default `unknown` slot (or absent), the attached literal type
+ * flows through as `T & { context: C }` — assignable back to `T`, so
+ * generic chain-building wrappers can delegate to this helper without a
+ * cast. When `T` already declares a narrow `context`, the result is
+ * `Omit<T, 'context'> & { context: C }` — replacement semantics stay
+ * honest (last pipe wins at runtime; the type never intersects two
+ * conflicting shapes).
+ *
  * @example
  * ```ts
  * client.pipe(context, { tenantId: 't-42' });
@@ -125,7 +134,12 @@ export function appendUrl<
 export function context<T extends Options, const C>(
   o: T,
   ctx: C
-): Omit<T, 'context'> & { context: C } {
+): T extends { context?: infer E }
+  ? [unknown] extends [E]
+    ? T & { context: C }
+    : Omit<T, 'context'> & { context: C }
+  : T & { context: C };
+export function context(o: Options, ctx: unknown): Options {
   return {
     ...o,
     context: ctx,
