@@ -1,7 +1,15 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
-    "rootDir": "src"
+    "rootDir": "src",
+    // The build contract, declared here rather than inherited: `tsc` must
+    // emit declaration-only output into dist/types (consumed by
+    // scripts/gen-dmts.mjs). tools-config's base config intentionally
+    // carries no outDir/declaration defaults, so a bare extend would dump
+    // JS next to sources and break `npm run build:types`.
+    "outDir": "dist/types",
+    "declaration": true,
+    "emitDeclarationOnly": true
   },
   "include": ["src"]
 }
