@@ -911,6 +911,19 @@ describe('Error Handling Integration Tests', () => {
       await expect(client.pipe(fetchData)).rejects.toThrow(/Standard Schema v1/);
     });
 
+    it('should skip validation when the factory returns undefined (schema-less endpoints)', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ n: 7 }), { status: 200 })
+      );
+
+      const client = create({ fetch: mockFetch })
+        .pipe(json)
+        .pipe(validate, (): StandardSchema | undefined => undefined)
+        .pipe(url, 'https://example.com/skip');
+
+      await expect(client.pipe(fetchData)).resolves.toEqual({ n: 7 });
+    });
+
     it('should reject with ValidationError from a factory-resolved schema', async () => {
       const mockFetch = vi.fn().mockResolvedValue(
         new Response(JSON.stringify({ n: 'bad' }), { status: 200 })

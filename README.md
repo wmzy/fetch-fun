@@ -178,7 +178,7 @@ Every config function has the shape `(o, ...args) => o'` — it takes the curren
 | `arrayBuffer(o)` | Reader: read the body as an `ArrayBuffer` | — |
 | `formData(o)` | Reader: read the body as a `FormData` | — |
 | `events(o, onEvent?)` | Reader: parse the body as a Server-Sent Events stream — each frame is passed to `onEvent` the moment its terminating blank line arrives, and `fetchData` resolves to the complete `SSEEvent[]` once the stream ends. Full wire-format framing: leading BOM, `\r\n`/`\r`/`\n` line endings, `:` comments, multi-line `data:` (joined with `\n`), `id:`, numeric `retry:`, and a trailing frame missing its blank line. Non-2xx responses still throw `HTTPError`; reconnection policy stays with you (see [docs/recipes.md](docs/recipes.md) for the Last-Event-ID loop) | `onEvent?: (e: SSEEvent) => void` — annotate the parameter (`(e: SSEEvent) => …`), as with `json`'s parser, so the generic pipe overload applies |
-| `validate(o, schema \| factory)` | Attach a Standard Schema v1 schema — or a `(client) => schema` factory resolved per request with the merged client; parsed data is validated and replaced by its output | `schema: StandardSchema \| (client: T) => StandardSchema` |
+| `validate(o, schema \| factory)` | Attach a Standard Schema v1 schema — or a `(client) => schema` factory resolved per request with the merged client; parsed data is validated and replaced by its output | `schema: StandardSchema \| (client: T) => StandardSchema \| undefined` |
 | `use(o, mw)` | Add one middleware (function or `{ name, outer, inner, middleware }` config) | `mw: MiddlewareInput` |
 | `middlewares(o, list)` | **Replace** the middleware list | `list: MiddlewareInput[]` |
 | `context(o, ctx)` | Set the business-data slot carried on the client (replaces a previous one); stripped from `RequestInit`, readable in middleware / mappers / a `validate` factory / `mapError` (`ctx.context`) | `ctx: any` — the attached literal type flows through the chain |
@@ -386,7 +386,7 @@ const api = ff
 await api.pipe(ff.fetchData); // Promise<{ id: number; nickname: string }>
 ```
 
-A factory returning a non-schema throws a `TypeError` when it runs — at fetch time, since its result only exists then.
+A factory returning `undefined` (or `null`) skips validation for that request — the opt-out for schema-less endpoints on a shared validated chain. Any other non-schema return throws a `TypeError` when it runs — at fetch time, since its result only exists then.
 
 **Business data via `context`.** The client doubles as a plain options object; `context` is its sanctioned slot for per-request business data (tenant ids, trace ids, feature flags). Attach it via `create({ context })` or the `context(o, ctx)` config function:
 

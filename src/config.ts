@@ -1458,12 +1458,15 @@ export function validate<T extends Options, S extends StandardSchema>(
  * called once per request at validation time with the fully merged
  * client, so it sees options attached anywhere in the chain — including
  * after `validate` — and can derive the schema from live client state
- * (`context`, an API version, ...). A factory returning a non-schema
- * throws a `TypeError` at fetch time, when the result first exists.
+ * (`context`, an API version, ...). A factory returning `undefined` (or
+ * `null`) skips validation for that request — the opt-out for
+ * schema-less endpoints on a shared validated chain. Any other
+ * non-schema return throws a `TypeError` at fetch time, when the result
+ * first exists.
  */
 export function validate<
   T extends Options,
-  F extends (client: T) => StandardSchema
+  F extends (client: T) => StandardSchema | undefined
 >(
   o: T,
   factory: F
@@ -1473,7 +1476,7 @@ export function validate<
 export function validate<
   T extends Options,
   S extends StandardSchema,
-  F extends (client: T) => StandardSchema
+  F extends (client: T) => StandardSchema | undefined
 >(
   o: T,
   schemaOrFactory: S | F
@@ -1501,14 +1504,17 @@ async function validateData(
   if (!res.ok) return;
   const spec = (finalOptions as any)[validateSymbol] as
     | StandardSchema
-    | ((client: Fetchable) => StandardSchema)
+    | ((client: Fetchable) => StandardSchema | undefined)
     | undefined;
   if (!spec) return;
 
   // A factory attached via `validate(o, (client) => schema)` is resolved
   // here, once per request, with the fully merged client — so it sees
-  // options attached after `validate` in the chain.
+  // options attached after `validate` in the chain. A factory resolving
+  // to undefined/null skips validation (schema-less endpoints); any
+  // other non-schema stays a TypeError.
   const schema = typeof spec === 'function' ? spec(finalOptions) : spec;
+  if (schema === undefined || schema === null) return;
   if (!isStandardSchema(schema)) {
     throw new TypeError(
       "validate() expects a Standard Schema v1 object: one with a '~standard' property of the form { version: 1, validate(value) }, as provided by Zod, Valibot, ArkType, etc."

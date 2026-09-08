@@ -431,7 +431,7 @@ const [oldUser, newUser] = await Promise.all([
 ]);
 ```
 
-A factory that returns a non-schema throws `TypeError` when it runs (fetch time) — the result can't be inspected at pipe time.
+A factory that returns `undefined` (or `null`) skips validation for that request — the opt-out for schema-less endpoints on a shared validated chain. Any other non-schema return throws `TypeError` when it runs (fetch time) — the result can't be inspected at pipe time.
 
 ## Streaming responses & Server-Sent Events
 
